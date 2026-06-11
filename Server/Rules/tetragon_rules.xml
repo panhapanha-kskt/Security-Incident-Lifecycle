@@ -1,0 +1,119 @@
+<!-- Tetragon eBPF runtime security rules
+     Replaces both 700000-tetragon.xml and tetragon_rules.xml.
+
+     FIXED: Rule ID conflict resolved.
+       - Original 700000-tetragon.xml used decoded_as:json directly (imprecise)
+       - Original tetragon_rules.xml used the named "tetragon" decoder (correct)
+       - Both files defined overlapping event types causing duplicate alerts
+       - This file consolidates all rules under the tetragon decoder (110xxx series)
+       - Rule 110003 conflict: was used for both SHA1 hash (local_rules.xml) and
+         kernel probe (tetragon_rules.xml). Kernel probe moved to 110006 here.
+         Verify local_rules.xml still has 110003 for SHA1 — it's a different group.
+
+     ACTION REQUIRED:
+       DELETE /var/ossec/etc/rules/700000-tetragon.xml
+       DELETE /var/ossec/etc/rules/tetragon_rules.xml
+       PLACE this file at /var/ossec/etc/rules/tetragon_rules.xml
+-->
+
+<!-- Base grouping rule using the named tetragon decoder -->
+<group name="tetragon,">
+
+  <rule id="110010" level="1">
+    <decoded_as>tetragon</decoded_as>
+    <description>Tetragon: event received.</description>
+  </rule>
+
+  <!-- Process execution -->
+  <rule id="110011" level="5">
+    <if_sid>110010</if_sid>
+    <field name="process_exec.process.exec_id">\.*</field>
+    <options>no_full_log</options>
+    <description>Tetragon: process "$(process_exec.process.binary)" executed.</description>
+    <mitre>
+      <id>T1059</id>
+    </mitre>
+    <group>process_exec,</group>
+  </rule>
+
+  <!-- Shell execution in container (high severity) -->
+  <rule id="110012" level="8">
+    <if_sid>110011</if_sid>
+    <field name="process_exec.process.binary">/usr/bin/sh|/usr/bin/bash|/usr/bin/zsh</field>
+    <options>no_full_log</options>
+    <description>Tetragon: shell execution detected — possible container escape or lateral movement.</description>
+    <mitre>
+      <id>T1059.004</id>
+    </mitre>
+    <group>process_exec,</group>
+  </rule>
+
+  <!-- Outbound download tools -->
+  <rule id="110013" level="7">
+    <if_sid>110011</if_sid>
+    <field name="process_exec.process.binary">/usr/bin/wget|/usr/bin/curl</field>
+    <options>no_full_log</options>
+    <description>Tetragon: outbound download tool "$(process_exec.process.binary)" executed.</description>
+    <mitre>
+      <id>T1105</id>
+    </mitre>
+    <group>process_exec,</group>
+  </rule>
+
+  <!-- Package manager execution -->
+  <rule id="110014" level="7">
+    <if_sid>110011</if_sid>
+    <field name="process_exec.process.binary">/usr/bin/apt|/usr/bin/yum|/usr/bin/dpkg|/usr/bin/rpm|/usr/bin/apk</field>
+    <options>no_full_log</options>
+    <description>Tetragon: package manager "$(process_exec.process.binary)" executed.</description>
+    <mitre>
+      <id>T1072</id>
+    </mitre>
+    <group>process_exec,</group>
+  </rule>
+
+  <!-- Process exit -->
+  <rule id="110015" level="3">
+    <if_sid>110010</if_sid>
+    <field name="process_exit.process.exec_id">\.*</field>
+    <options>no_full_log</options>
+    <description>Tetragon: process "$(process_exit.process.binary)" exited.</description>
+    <mitre>
+      <id>T1489</id>
+    </mitre>
+    <group>process_exit,</group>
+  </rule>
+
+  <!-- Non-zero exit code (error) -->
+  <rule id="110016" level="5">
+    <if_sid>110015</if_sid>
+    <field name="process_exit.status">\.*</field>
+    <options>no_full_log</options>
+    <description>Tetragon: process "$(process_exit.process.binary)" exited with error status.</description>
+    <group>process_exit,</group>
+  </rule>
+
+  <!-- Kernel probe (kprobe) events -->
+  <rule id="110017" level="5">
+    <if_sid>110010</if_sid>
+    <field name="process_kprobe.process.exec_id">\.*</field>
+    <options>no_full_log</options>
+    <description>Tetragon: kernel probe event detected.</description>
+    <mitre>
+      <id>T1547.006</id>
+    </mitre>
+    <group>process_kprobe,</group>
+  </rule>
+
+  <!-- Outbound network connection via kprobe -->
+  <rule id="110018" level="9">
+    <if_sid>110017</if_sid>
+    <field name="family">AF_INET|AF_INET6</field>
+    <description>Tetragon: outbound connection to "$(dstip)" on port "$(dstport)" detected.</description>
+    <mitre>
+      <id>T1049</id>
+      <id>T1041</id>
+    </mitre>
+  </rule>
+
+</group>

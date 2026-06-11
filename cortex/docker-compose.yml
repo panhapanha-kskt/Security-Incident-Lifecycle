@@ -1,0 +1,135 @@
+services:
+  elasticsearch:
+    image: "elasticsearch:${elasticsearch_image_version}"
+    container_name: elasticsearch-cortex
+    hostname: elasticsearch-cortex
+    restart: unless-stopped
+    user: ${UID}:0
+    environment:
+      - http.host=0.0.0.0
+      - discovery.type=single-node
+      - cluster.name=hive
+      - thread_pool.search.queue_size=100000
+      - thread_pool.write.queue_size=100000
+      - bootstrap.memory_lock=false
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=${elasticsearch_password} # Password for "elastic" default user
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - ./elasticsearch/data:/usr/share/elasticsearch/data
+      - ./elasticsearch/logs:/usr/share/elasticsearch/logs
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '4.000'
+    memswap_limit: 1G
+    networks:
+      - cortex-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -s -u 'elastic:${elasticsearch_password}' http://elasticsearch-cortex:9200/_cat/health || exit 1"]
+      start_period: 120s
+      interval: 30s
+      timeout: 30s
+      retries: 10
+    labels:
+      com.strangebee.stack: "cortex-stack"
+      com.strangebee.service: "elasticsearch"
+      com.strangebee.role: "indexing"
+      com.strangebee.environment: "testing"
+      com.strangebee.version: "${elasticsearch_image_version}"
+      com.strangebee.dependency: "None"
+
+  cortex:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cortex
+    hostname: cortex
+    restart: unless-stopped
+    environment:
+      - |
+        JAVA_OPTS=
+          -Xms256M
+          -Xmx256M
+          -XX:MaxMetaspaceSize=256m
+          -XX:ReservedCodeCacheSize=128m
+      - es_uri=http://elasticsearch-cortex:9200
+      - job_directory=/tmp/cortex-jobs
+      - docker_job_directory=${cortex_docker_job_directory}
+    volumes:
+      # Mounting docker socket in the container so that cortex can run jobs as containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Storing jobs under /tmp for now
+      - ./cortex/cortex-jobs:/tmp/cortex-jobs
+      - ./cortex/config:/etc/cortex:ro
+      - ./cortex/logs:/var/log/cortex
+      - ./cortex/neurons:/opt/cortexneurons
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '2.000'
+    memswap_limit: 512M
+    networks:
+      - cortex-network
+      - thehive-network
+    # ports:
+    #   - '0.0.0.0:9001:9001'
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -f http://localhost:9001/cortex/api/status || exit 1"]
+      start_period: 40s
+      interval: 30s
+      timeout: 30s
+      retries: 10
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    labels:
+      com.strangebee.stack: "cortex-stack"
+      com.strangebee.service: "cortex"
+      com.strangebee.role: "application"
+      com.strangebee.environment: "testing"
+      com.strangebee.version: "${cortex_image_version}"
+      com.strangebee.dependency: "elasticsearch"
+
+  nginx:
+    image: "nginx:${nginx_image_version}"
+    container_name: nginx-cortex
+    hostname: nginx
+    restart: unless-stopped
+    environment:
+      SERVER_NAME: "${nginx_server_name}"
+      NGINX_SSL_TRUSTED_CERTIFICATE: "${nginx_ssl_trusted_certificate}"
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates  # Custom Nginx configuration
+      - ./nginx/certs:/etc/nginx/certs  # Directory for custom certificates
+    ports:
+      - '9443:443'
+    networks:
+      - cortex-network
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '1.000'
+    depends_on:
+      - cortex
+    labels:
+      com.strangebee.stack: "cortex-stack"
+      com.strangebee.service: "nginx"
+      com.strangebee.role: "reverse proxy"
+      com.strangebee.environment: "testing"
+      com.strangebee.version: "${nginx_image_version}"
+      com.strangebee.dependency: "cortex"
+
+
+networks:
+  cortex-network:
+  thehive-network:             # owned by prod1-thehive — joined as external consumer
+    external: true
+    name: prod1-thehive_thehive-network

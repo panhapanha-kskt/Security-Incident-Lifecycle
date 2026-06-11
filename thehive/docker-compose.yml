@@ -1,0 +1,169 @@
+services:
+  cassandra:
+    image: "cassandra:${cassandra_image_version}"
+    container_name: cassandra
+    hostname: cassandra
+    restart: unless-stopped
+    user: ${UID}:${GID}
+    environment:
+      - CASSANDRA_CLUSTER_NAME=TheHive
+      - CASSANDRA_AUTHENTICATOR=PasswordAuthenticator
+      - CASSANDRA_NUM_TOKENS=4
+      - HEAP_NEWSIZE=256M
+      # https://docs.datastax.com/en/cassandra-oss/3.0/cassandra/operations/opsTuneJVM.html
+      # ¼ of MAX_HEAP_SIZE or 100 times the number of cores
+      - MAX_HEAP_SIZE=512M
+      # max(min(1/2 ram, 1024MB), min(1/4 ram, 8GB)
+    volumes:
+      - ./cassandra/data:/var/lib/cassandra
+      - ./cassandra/logs:/var/log/cassandra
+      - ./cassandra/opt-logs:/opt/cassandra/logs
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '3.000'
+    # Prevent swap https://docs.docker.com/engine/containers/resource_constraints/#prevent-a-container-from-using-swap
+    memswap_limit: 1G
+    networks:
+      - thehive-network
+    healthcheck:
+      # Waiting for cqlsh command to succeed to make sure Cassandra is ready
+      test: ["CMD-SHELL", "cqlsh -u cassandra -p cassandra -e 'describe keyspaces' || exit 1"]
+      start_period: 120s
+      interval: 30s
+      timeout: 30s
+      retries: 10
+    labels:
+      com.strangebee.stack: "thehive-stack"
+      com.strangebee.service: "cassandra"
+      com.strangebee.role: "database"
+      com.strangebee.environment: "production-thehive"
+      com.strangebee.version: "${cassandra_image_version}"
+      com.strangebee.dependency: "None"
+
+  elasticsearch:
+    image: "elasticsearch:${elasticsearch_image_version}"
+    container_name: elasticsearch
+    hostname: elasticsearch
+    restart: unless-stopped
+    user: ${UID}:0
+    environment:
+      - http.host=0.0.0.0
+      - discovery.type=single-node
+      - cluster.name=hive
+      - thread_pool.search.queue_size=100000
+      - thread_pool.write.queue_size=100000
+      - bootstrap.memory_lock=false
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=${elasticsearch_password} # Password for "elastic" default user
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - ./elasticsearch/data:/usr/share/elasticsearch/data
+      - ./elasticsearch/logs:/usr/share/elasticsearch/logs
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '3.000'
+    memswap_limit: 1G
+    networks:
+      - thehive-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -s -u 'elastic:${elasticsearch_password}' http://elasticsearch:9200/_cat/health || exit 1"]
+      start_period: 40s
+      interval: 30s
+      timeout: 30s
+      retries: 10
+    labels:
+      com.strangebee.stack: "thehive-stack"
+      com.strangebee.service: "elasticsearch"
+      com.strangebee.role: "indexing"
+      com.strangebee.environment: "production-thehive"
+      com.strangebee.version: "${elasticsearch_image_version}"
+      com.strangebee.dependency: "None"
+
+  thehive:
+    image: "strangebee/thehive:${thehive_image_version}"
+    container_name: thehive
+    hostname: thehive
+    restart: unless-stopped
+    command: '--no-config --no-config-secret'
+    user: ${UID}:${GID}
+    environment:
+      - |
+        JAVA_OPTS=
+          -Xms512M
+          -Xmx1G
+          -XX:MaxMetaspaceSize=512m
+          -XX:ReservedCodeCacheSize=256m
+    volumes:
+      - ./thehive/config:/etc/thehive:ro
+      - ./thehive/data/files:/opt/thp/thehive/files
+      - ./thehive/logs:/var/log/thehive
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          cpus: '4.000'
+    memswap_limit: 3G
+    networks:
+      - thehive-network
+    ports:
+      - '0.0.0.0:9000:9000'
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -f thehive:9000/thehive/api/status || exit 1"]
+      start_period: 40s
+      interval: 10s
+      timeout: 1s
+      retries: 5
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+    labels:
+      com.strangebee.stack: "thehive-stack"
+      com.strangebee.service: "thehive"
+      com.strangebee.role: "application"
+      com.strangebee.environment: "production-thehive"
+      com.strangebee.version: "${thehive_image_version}"
+      com.strangebee.dependency: "elasticsearch, cassandra"
+
+  nginx:
+    image: "nginx:${nginx_image_version}"
+    container_name: nginx
+    hostname: nginx
+    restart: unless-stopped
+    environment:
+      SERVER_NAME: "${nginx_server_name}"
+      NGINX_SSL_TRUSTED_CERTIFICATE: "${nginx_ssl_trusted_certificate}"
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates  # Custom Nginx configuration
+      - ./nginx/certs:/etc/nginx/certs  # Directory for custom certificates
+    ports:
+      - '8443:443'
+    networks:
+      - thehive-network
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '1.000'
+    depends_on:
+      - thehive
+    labels:
+      com.strangebee.stack: "thehive-stack"
+      com.strangebee.service: "nginx"
+      com.strangebee.role: "reverse proxy"
+      com.strangebee.environment: "production-thehive"
+      com.strangebee.version: "${nginx_image_version}"
+      com.strangebee.dependency: "thehive"
+
+
+networks:
+  thehive-network:

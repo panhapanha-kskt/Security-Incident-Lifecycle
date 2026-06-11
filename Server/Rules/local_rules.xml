@@ -1,0 +1,175 @@
+<!-- Local rules -->
+<!-- Copyright (C) 2015, Wazuh Inc. -->
+<!--
+  CHANGES FROM ORIGINAL:
+  - Rule 100200: removed redundant <if_group> (if_sid 5763 is sufficient and more precise).
+    Removed stale commented-out <field name="srcip"> debug artifact.
+  - Rule 200400: added clarifying comment that this requires a custom nmap integration
+    feeding JSON — rule is correct but passive without it.
+  - No rule ID changes. No functional logic changes except the if_group removal on 100200.
+-->
+
+<!-- ============================================================
+     SSH
+     ============================================================ -->
+<group name="local,syslog,sshd,">
+  <rule id="100001" level="5">
+    <if_sid>5716</if_sid>
+    <srcip>1.1.1.1</srcip>
+    <description>sshd: authentication failed from IP 1.1.1.1.</description>
+    <group>authentication_failed,pci_dss_10.2.4,pci_dss_10.2.5,</group>
+  </rule>
+</group>
+
+<!-- ============================================================
+     RDP brute force
+     ============================================================ -->
+<group name="rdp,">
+  <rule id="100100" level="10" frequency="3" timeframe="120">
+    <if_matched_sid>60122</if_matched_sid>
+    <description>RDP attack detected on Windows 10.</description>
+  </rule>
+</group>
+
+<!-- ============================================================
+     Malware hash detection (local IOC list)
+     Fires on syscheck file added (550) or modified (554).
+     Runs in parallel with the MISP integration — both check hashes independently.
+     ============================================================ -->
+<group name="malware,">
+  <rule id="110002" level="13">
+    <if_sid>554,550</if_sid>
+    <list field="md5" lookup="match_key">etc/lists/malicious-ioc/malware-hashes</list>
+    <description>File with known malware MD5 hash detected: $(file)</description>
+    <mitre><id>T1204.002</id></mitre>
+    <group>malware,syscheck,threat_intel,</group>
+  </rule>
+
+  <rule id="110003" level="13">
+    <if_sid>554,550</if_sid>
+    <list field="sha1" lookup="match_key">etc/lists/malicious-ioc/malware-hashes</list>
+    <description>File with known malware SHA1 hash detected: $(file)</description>
+    <mitre><id>T1204.002</id></mitre>
+    <group>malware,syscheck,threat_intel,</group>
+  </rule>
+
+  <rule id="110004" level="13">
+    <if_sid>554,550</if_sid>
+    <list field="sha256" lookup="match_key">etc/lists/malicious-ioc/malware-hashes</list>
+    <description>File with known malware SHA256 hash detected: $(file)</description>
+    <mitre><id>T1204.002</id></mitre>
+    <group>malware,syscheck,threat_intel,</group>
+  </rule>
+</group>
+
+<!-- ============================================================
+     AlienVault IP reputation block
+     FIX: Removed redundant <if_group> — if_sid 5763 (web attack) is sufficient
+     and more precise. Keeping both caused this rule to fire on ANY rule in the
+     web|attack|attacks group that also matched 5763, which is the same thing
+     but expressed ambiguously. if_sid alone is the correct form.
+     AR firewall-drop fires on rule 100200 — see ossec.conf rules_id list.
+     ============================================================ -->
+<group name="attack,">
+  <rule id="100200" level="10">
+    <if_sid>5763</if_sid>
+    <list field="srcip" lookup="address_match_key">etc/lists/blacklist-alienvault</list>
+    <description>Web attack from IP found in AlienVault reputation database: $(srcip)</description>
+    <mitre><id>T1190</id></mitre>
+    <group>attack,firewall_block,authentication_failures,threat_intel,</group>
+  </rule>
+</group>
+
+<!-- ============================================================
+     Active response feedback loop
+     Matches the string "firewall-drop" in active-responses.log to confirm
+     that the AR binary actually executed on the agent side.
+     ============================================================ -->
+<group name="active_response,firewall,">
+  <rule id="100300" level="12">
+    <match>firewall-drop</match>
+    <description>Firewall drop active response executed.</description>
+    <group>active_response,firewall_block,</group>
+  </rule>
+</group>
+
+<!-- ============================================================
+     Osquery integration rules
+     Base rule 24000 is the Wazuh built-in osquery decoder output.
+     NOTE: osquery wodle must be enabled in ossec.conf for these to fire.
+     ============================================================ -->
+<group name="osquery,">
+
+  <rule id="100400" level="3">
+    <if_sid>24000</if_sid>
+    <field name="name">.+</field>
+    <description>Osquery event: $(name)</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <!-- Backdoor / C2 listening ports -->
+  <rule id="100401" level="10">
+    <if_sid>100400</if_sid>
+    <field name="name">listening_ports</field>
+    <field name="columns.port">4444|1337|31337|8080|9999</field>
+    <description>Suspicious listening port detected: $(columns.port)</description>
+    <mitre>
+      <id>T1049</id>
+    </mitre>
+    <group>osquery,network,backdoor,</group>
+  </rule>
+
+  <!-- Fileless malware — process binary deleted after launch -->
+  <rule id="100402" level="12">
+    <if_sid>100400</if_sid>
+    <field name="name">processes</field>
+    <field name="columns.on_disk">0</field>
+    <description>Fileless process detected: $(columns.name) — binary deleted after launch.</description>
+    <mitre>
+      <id>T1055</id>
+    </mitre>
+    <group>osquery,malware,fileless,</group>
+  </rule>
+
+  <!-- Persistence mechanism -->
+  <rule id="100403" level="10">
+    <if_sid>100400</if_sid>
+    <field name="name">startup_items</field>
+    <description>New startup/persistence item detected: $(columns.name)</description>
+    <mitre>
+      <id>T1547</id>
+    </mitre>
+    <group>osquery,persistence,</group>
+  </rule>
+
+  <!-- High CPU — potential cryptominer or runaway process -->
+  <rule id="100404" level="5">
+    <if_sid>100400</if_sid>
+    <field name="name">high_load_average</field>
+    <description>High CPU load average detected: $(columns.average) over $(columns.period)</description>
+    <group>osquery,performance,</group>
+  </rule>
+
+</group>
+
+<!-- ============================================================
+     Nmap network scan detection
+     NOTE: This rule requires a custom integration or script that feeds
+     nmap JSON output into Wazuh as a localfile log. Without that feeding
+     mechanism this rule is passive and will never fire. The decoder that
+     produces nmap_host and nmap_protocol fields must be present in
+     /var/ossec/etc/decoders/.
+     ============================================================ -->
+<group name="linux,nmap,network_scan,">
+  <rule id="200400" level="3">
+    <decoded_as>json</decoded_as>
+    <field name="nmap_host">\.+</field>
+    <field name="nmap_protocol">\.+</field>
+    <description>NMAP: network scan detected targeting $(nmap_host)</description>
+    <mitre>
+      <id>T1046</id>
+    </mitre>
+    <options>no_full_log</options>
+    <group>network_scan,recon,</group>
+  </rule>
+</group>
