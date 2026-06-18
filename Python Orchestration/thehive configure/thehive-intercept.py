@@ -443,9 +443,9 @@ def main() -> None:
         print(
             f"\n  {C.RED}[FATAL]{C.RESET} You don't export your crendential yet!!"
             f"\n  {C.RED}[FATAL]{C.RESET} Please Copy that and Paste.\n"
-            f"export THEHIVE_KEY=\"OsI8EYIrkrecKmH7tq0pUAt24l9Sp9P9\"\n",
+            f"export THEHIVE_KEY=\"your api key\"\n",
             f"export GMAIL_USER=\"sop98886@gmail.com\"\n",
-            f"export GMAIL_PASS=\"ctjh sfoc unju esss\"\n",
+            f"export GMAIL_PASS=\"your - gamil - secret key\"\n",
             f"export ALERT_TO=\"tithsopanha0@gmail.com\"\n",
             file=sys.stderr,
         )
