@@ -1,4 +1,4 @@
-#THEHIVE_KEY = "OsI8EYIrkrecKmH7tq0pUAt24l9Sp9P9"
+#THEHIVE_KEY = "your-key"
 #!/usr/bin/env python3
 THEHIVE_URL = "https://192.168.200.1:8443"
 # THEHIVE_KEY is read exclusively from the environment variable THEHIVE_KEY.
