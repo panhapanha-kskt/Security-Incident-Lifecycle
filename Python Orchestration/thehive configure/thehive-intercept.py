@@ -1,39 +1,5 @@
 #!/usr/bin/env python3
-"""
-thehive-intercept.py – Unified Wazuh SOC → TheHive + Gmail Engine
-═══════════════════════════════════════════════════════════════════
-
-FIX SUMMARY (vs original):
-  1. Imports GmailAlerter from gmail_alert.py — Gmail is now called from
-     inside this loop instead of being a completely separate process.
-  2. Added GMAIL env-var guard matching the existing THEHIVE_KEY pattern.
-  3. GmailAlerter.send() is called right after every successful TheHive
-     case creation AND for every alert that passes severity/dedup gates,
-     so email fires even when the TheHive API is unreachable.
-  4. Added email_sent / email_err counters to _fresh_counters().
-  5. GmailAlerter.cleanup() / reset() called on the same cycle as the
-     other periodic-maintenance helpers — one shared cleanup cadence.
-  6. Updated daily summary, stats banner, and shutdown log to include
-     email counters.
-
-Required environment variables:
-  THEHIVE_KEY          TheHive API key
-
-Optional environment variables (Gmail alerting):
-  GMAIL_USER           Gmail sender address
-  GMAIL_PASS           Gmail App Password
-  ALERT_TO             Recipient address
-
-Other optional environment variables:
-  CASE_DEDUP_SEC       Case dedup window in seconds (default: 600)
-  CASE_MIN_SEVERITY    Minimum severity for case creation (default: MEDIUM)
-  THEHIVE_VERIFY_SSL   'true' to verify SSL certs (default: false)
-  THEHIVE_TIMEOUT      HTTP timeout in seconds (default: 15)
-  THEHIVE_RETRIES      HTTP retry count (default: 2)
-"""
-
 from __future__ import annotations
-
 import sys
 from pathlib import Path
 
@@ -75,7 +41,7 @@ from display import (
     show_shutdown,
     show_stats,
 )
-from interceptor import MultiTailer, build_alert
+from intercept import MultiTailer, build_alert          # BREAK-4 FIX: was "interceptor"
 from thehive_config import (
     CASE_DEDUP_SEC,
     CASE_MIN_SEVERITY,
@@ -84,51 +50,99 @@ from thehive_config import (
     THEHIVE_URL,
     THEHIVE_VERIFY_SSL,
 )
+from thehive_observable import attach_observables       # new signature: no responder args
 from thehive_client import TheHiveClient
 from thehive_manager import TheHiveCaseManager
 from thehive_responder import run_responder
-
-# FIX 1: import GmailAlerter — safe because gmail_alert.py no longer
-# reads env vars at module level (they're loaded inside _load_gmail_config).
 from gmail_alert import GmailAlerter
+
+# ── Unified email dedup window ────────────────────────────────────────────────
+# Defined at module level (before main) so it is available when
+# GmailAlerter is instantiated inside main().
+EMAIL_DEDUP_SEC_UNIFIED: int = int(os.environ.get("EMAIL_DEDUP_SEC", CASE_DEDUP_SEC))
 
 # ── API keys / credentials ────────────────────────────────────────────────────
 
-# TheHive key — required
 _THEHIVE_KEY: str = os.environ.get("THEHIVE_KEY", "").strip()
 
-# FIX 2: Gmail credentials — optional; all three must be set to enable email
 _GMAIL_USER:    str  = os.environ.get("GMAIL_USER", "").strip()
 _GMAIL_PASS:    str  = os.environ.get("GMAIL_PASS", "").strip()
 _GMAIL_TO:      str  = os.environ.get("ALERT_TO",   "").strip()
 _GMAIL_ENABLED: bool = bool(_GMAIL_USER and _GMAIL_PASS and _GMAIL_TO)
 
-# ── Cortex responder name ─────────────────────────────────────────────────────
-WAZUH_RESPONDER_NAME: str = "Wazuh_1_0"   # ← set your exact Cortex responder name
+# ── Cortex responder names ────────────────────────────────────────────────────
+# These MUST match the "name" field in the Cortex responder .json descriptor.
+#   Wazuh_1_0    → responders/Wazuh/wazuh.json        "name": "Wazuh_1_0"
+#   WazuhFIM_1_0 → responders/WazuhFIM/WazuhFIM.json  "name": "WazuhFIM_1_0"
+
+_RESPONDER_NETWORK: str = "Wazuh_1_0"
+_RESPONDER_FIM:     str = "WazuhFIM_1_0"    # BREAK-3 FIX: was "WazuhFIM_1_0_1_0"
+
+# ── Rule → Cortex responder routing ──────────────────────────────────────────
+# Must stay in sync with:
+#   thehive_observable.py  _FIM_RULES / _BRUTE_FORCE_RULES
+#   wazuh.py (Cortex)      _FIM_RULES
+#   wazuh_fim.py (Cortex)  _SUPPORTED_RULES
+#   ossec.conf             active-response blocks (manager + agent)
+
+_FIM_RULES: set[str] = {
+    "100117", "100123",          # critical file modified / repeated mods
+    "550",    "553",    "554",   # MINOR-1 FIX: "554" added (syscheck file-added)
+}
+
+_NETWORK_RULES: set[str] = {
+    "5503",   "5710",   "5712",  # SSH / PAM brute-force
+    "5715",   "5716",   "5758",  # SSH failures
+    "5763",                       # web attack
+    "651",                        # generic auth failures
+    "100105", "100200",           # multiple SSH failures, AlienVault blacklist
+    "100901", "100904",           # SSH brute-force confirmed, port scan
+    "100628", "100650", "100651", # CriminalIP / TOR critical
+    "100652", "100653", "100654", # scanner / darkweb
+    "100655", "100656", "100657", # darkweb / snort / anonVPN
+    "100662", "100663",           # exfiltration / TOR C2
+    "100664", "100665",           # repeated CriminalIP
+    "100666", "100667", "100668", # active compromise composites
+    "100700",                     # DDoS
+    "100805", "100806", "100808", # SQL injection / web scanner
+    "100907",                     # Zeek expired cert
+}
+
+
+def _get_responder(rule_id: str) -> Optional[str]:
+    """
+    Return the correct Cortex responder name for rule_id, or None.
+
+    FIM rules   → WazuhFIM_1_0   (fim-respond.sh — no srcip needed)
+    Network rules → Wazuh_1_0   (firewall-drop  — needs srcip)
+    Everything else → None       (no automated response)
+    """
+    if rule_id in _FIM_RULES:
+        return _RESPONDER_FIM
+    if rule_id in _NETWORK_RULES:
+        return _RESPONDER_NETWORK
+    return None
 
 
 # ── Counters ──────────────────────────────────────────────────────────────────
 
 def _fresh_counters() -> dict:
     return {
-        "total":        0,
-        "CRITICAL":     0,
-        "HIGH":         0,
-        "MEDIUM":       0,
-        "LOW":          0,
-        "INFO":         0,
-        "skipped":      0,
-        "src_alerts":   0,
-        "src_archives": 0,
-        # TheHive case stats
-        "hive_cases":   0,   # cases successfully created
-        "hive_skipped": 0,   # dedup-skipped case creations
-        # Cortex responder stats
+        "total":         0,
+        "CRITICAL":      0,
+        "HIGH":          0,
+        "MEDIUM":        0,
+        "LOW":           0,
+        "INFO":          0,
+        "skipped":       0,
+        "src_alerts":    0,
+        "src_archives":  0,
+        "hive_cases":    0,
+        "hive_skipped":  0,
         "hive_resp_ok":  0,
         "hive_resp_err": 0,
-        # FIX 4: Gmail stats
-        "email_sent": 0,
-        "email_err":  0,
+        "email_sent":    0,
+        "email_err":     0,
     }
 
 
@@ -357,24 +371,24 @@ def _handle_signal(signum, frame) -> None:
 
 def _run_responder_and_log(
     client,
-    case_id: str,
-    ctrs:    dict,
-    label:   str = "alert",
+    case_id:        str,
+    ctrs:           dict,
+    label:          str = "alert",
+    responder_name: str = _RESPONDER_NETWORK,
 ) -> None:
-    """Trigger the Cortex responder on a TheHive case."""
+    """Trigger a Cortex responder on a TheHive case and update counters."""
     try:
         result = run_responder(
             client         = client,
             case_id        = case_id,
-            responder_name = WAZUH_RESPONDER_NAME,
+            responder_name = responder_name,
             poll_result    = False,
         )
-
         if result["status"] == "triggered":
             ctrs["hive_resp_ok"] += 1
             print(
                 f"  {C.TEAL}[RESPONDER]{C.RESET} case={case_id}"
-                f"  responder={WAZUH_RESPONDER_NAME}"
+                f"  responder={responder_name}"
                 f"  action_id={result['action_id']}"
                 f"  ({label})"
             )
@@ -394,23 +408,23 @@ def _run_responder_and_log(
                 f"Responder not triggered  case={case_id}"
                 f"  status={result['status']}  error={result['error']}"
             )
-
     except Exception as exc:
         ctrs["hive_resp_err"] += 1
         logging.error(f"run_responder raised unexpectedly case={case_id}: {exc}")
 
 
-# FIX 3: Gmail send helper ────────────────────────────────────────────────────
+# ── Gmail send helper ─────────────────────────────────────────────────────────
 
 def _send_email_and_log(
-    gmail:  GmailAlerter,
-    alert:  dict,
-    ctrs:   dict,
-    label:  str = "alert",
+    gmail: GmailAlerter,
+    alert: dict,
+    ctrs:  dict,
+    label: str = "alert",
 ) -> None:
     """
     Call gmail.send() and update counters.
     Only called when _GMAIL_ENABLED is True and dry_run is False.
+    send() returns False on dedup/severity skip (not an error).
     """
     try:
         sent = gmail.send(alert)
@@ -421,8 +435,6 @@ def _send_email_and_log(
                 f"  sev={alert.get('severity','?')}"
                 f"  src={alert.get('srcip','')}  label={label}"
             )
-        # send() returns False for dedup/severity skip — not an error,
-        # so we don't increment email_err here.
     except Exception as exc:
         ctrs["email_err"] += 1
         logging.error(f"GmailAlerter.send raised unexpectedly: {exc}")
@@ -438,15 +450,13 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT,  _handle_signal)
 
-    # ── SEC-1: TheHive API key guard ──────────────────────────────────────
     if not _THEHIVE_KEY:
         print(
-            f"\n  {C.RED}[FATAL]{C.RESET} You don't export your crendential yet!!"
-            f"\n  {C.RED}[FATAL]{C.RESET} Please Copy that and Paste.\n"
-            f"export THEHIVE_KEY=\"your api key\"\n",
-            f"export GMAIL_USER=\"sop98886@gmail.com\"\n",
-            f"export GMAIL_PASS=\"your - gamil - secret key\"\n",
-            f"export ALERT_TO=\"tithsopanha0@gmail.com\"\n",
+            f"\n  {C.RED}[FATAL]{C.RESET} THEHIVE_KEY not set. Export credentials first:\n"
+            f"  export THEHIVE_KEY=\"SSZNE7qtAl6iBJNhls4Pvvt/iDuu7e+Y\"\n"
+            f"  export GMAIL_USER=\"sop98886@gmail.com\"\n"
+            f"  export GMAIL_PASS=\"ctjh sfoc unju esss\"\n"
+            f"  export ALERT_TO=\"tithsopanha0@gmail.com\"\n",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -463,7 +473,6 @@ def main() -> None:
     if dry:
         print(f"  {C.YELLOW}[DRY-RUN MODE]{C.RESET} No TheHive or Gmail API calls will be made.\n")
 
-    # ── Build TheHive client ──────────────────────────────────────────────
     try:
         client = TheHiveClient(
             url        = THEHIVE_URL,
@@ -496,17 +505,11 @@ def main() -> None:
             )
             logging.error("TheHive unreachable — cases will not be created")
 
-    # FIX 2: Gmail setup — instantiated here so there is exactly one
-    # GmailAlerter in the process.  When disabled it still exists but
-    # send() returns False immediately with no network calls.
-    gmail: GmailAlerter | None = None
+    gmail: Optional[GmailAlerter] = None
     if not dry:
         if _GMAIL_ENABLED:
             gmail = GmailAlerter(dedup_sec=EMAIL_DEDUP_SEC_UNIFIED)
-            print(
-                f"  {C.GREEN}[+] Gmail alerting enabled{C.RESET}"
-                f"  →  {_GMAIL_TO}\n"
-            )
+            print(f"  {C.GREEN}[+] Gmail alerting enabled{C.RESET}  →  {_GMAIL_TO}\n")
             logging.info(f"Gmail alerting enabled  to={_GMAIL_TO}")
         else:
             print(
@@ -563,7 +566,7 @@ def main() -> None:
                 correlator.reset()
                 manager.reset()
                 if gmail:
-                    gmail.reset()   # FIX 5: reset Gmail dedup on day boundary
+                    gmail.reset()
                 cycle = 0
                 print(
                     f"\n{C.CYAN}{C.BOLD}"
@@ -628,17 +631,45 @@ def main() -> None:
 
                 if isinstance(case_id, str) and case_id:
                     ctrs["hive_cases"] += 1
+
                     if not dry:
-                        _run_responder_and_log(client, case_id, ctrs, label="alert")
+                        # ── Step 1: post observables ──────────────────────
+                        # BREAK-1 FIX: new signature — no responder args.
+                        # attach_observables handles ONLY extraction + posting.
+                        obs_result = attach_observables(
+                            client,
+                            case_id,
+                            alert,
+                            default_tlp = 2,   # AMBER
+                            default_pap = 2,   # AMBER
+                        )
+                        logging.info(
+                            f"Observables added  case={case_id}  rule={rule_id}  "
+                            f"added={obs_result['added']}  "
+                            f"ioc={obs_result['ioc_count']}  "
+                            f"hash={obs_result['hash_count']}  "
+                            f"skipped={obs_result['skipped']}  "
+                            f"failed={obs_result['failed']}"
+                        )
+
+                        # ── Step 2: trigger Cortex responder ──────────────
+                        # BREAK-2 FIX: _get_responder() now explicitly called
+                        # here instead of relying on the removed
+                        # auto_run_responder flag inside observable manager.
+                        chosen_responder = _get_responder(rule_id)
+                        if chosen_responder:
+                            _run_responder_and_log(
+                                client,
+                                case_id,
+                                ctrs,
+                                label          = f"rule:{rule_id}",
+                                responder_name = chosen_responder,
+                            )
 
                 elif case_id is False:
                     ctrs["hive_skipped"] += 1
 
-                # FIX 3: Gmail — called for every alert that passes the
-                # severity/dedup gates above, regardless of whether TheHive
-                # accepted or dedup-skipped it.  GmailAlerter has its own
-                # internal dedup (EMAIL_DEDUP_SEC_UNIFIED) so it won't
-                # re-send within its own cooldown window.
+                # ── Gmail alert ───────────────────────────────────────────
                 if gmail and not dry:
                     _send_email_and_log(gmail, alert, ctrs, label="alert")
 
@@ -658,12 +689,13 @@ def main() -> None:
                         if isinstance(corr_id, str) and corr_id:
                             ctrs["hive_cases"] += 1
                             if not dry:
+                                # Correlation cases always use the network responder
                                 _run_responder_and_log(
-                                    client, corr_id, ctrs, label="correlation"
+                                    client, corr_id, ctrs,
+                                    label          = "correlation",
+                                    responder_name = _RESPONDER_NETWORK,
                                 )
-                                # Also email on correlation cases
                                 if gmail:
-                                    # Build a synthetic alert dict for the email
                                     corr_alert = {
                                         "severity":    corr["severity"],
                                         "level":       13 if corr["severity"] == "CRITICAL" else 10,
@@ -702,9 +734,8 @@ def main() -> None:
                 bf_tracker.cleanup()
                 manager.cleanup()
                 if gmail:
-                    gmail.cleanup()   # FIX 5: clean Gmail dedup on same cadence
+                    gmail.cleanup()
 
-            # FIX 6: stats banner includes email counters
             if cycle % 300 == 0:
                 show_stats(day.active_day, ctrs, day.seconds_until_midnight())
                 print(
@@ -734,13 +765,6 @@ def main() -> None:
             f"  email_sent={ctrs['email_sent']}"
             f"  email_err={ctrs['email_err']}"
         )
-        sys.exit(0)
-
-
-# ── Unified email dedup window ────────────────────────────────────────────────
-# Mirrors CASE_DEDUP_SEC so email and TheHive stay in sync.
-# Override by setting EMAIL_DEDUP_SEC env var.
-EMAIL_DEDUP_SEC_UNIFIED: int = int(os.environ.get("EMAIL_DEDUP_SEC", CASE_DEDUP_SEC))
 
 
 if __name__ == "__main__":
