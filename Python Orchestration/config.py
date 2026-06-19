@@ -18,6 +18,10 @@ FAILED_LOGIN_RULES: set[str] = {
     "100105", "100116", "100901",
 }
 
+MALWARE_HASH_RULES: set[str] = {
+    "110002", "110003", "110004",
+}
+
 MIN_SEVERITY = "LOW"
 
 CRITICAL_RULES: dict[str, str] = {
