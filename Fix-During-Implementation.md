@@ -463,4 +463,10 @@ for line in sys.stdin:
 
 ---
 
+## Starting Cortex
+```
+docker compose build --no-cache cortex
+docker compose up -d cortex
+```
+
 *ASIL Project - Cambodia Academy of Digital Technology*
