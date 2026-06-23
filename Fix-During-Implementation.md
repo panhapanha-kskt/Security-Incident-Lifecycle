@@ -463,4 +463,4 @@ for line in sys.stdin:
 
 ---
 
-*ASIL Project — BlueTeam-Group7 · Techo Startup Center · Cambodia Academy of Digital Technology*
+*ASIL Project - Cambodia Academy of Digital Technology*
