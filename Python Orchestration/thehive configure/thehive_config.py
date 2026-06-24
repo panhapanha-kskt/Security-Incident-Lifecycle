@@ -1,4 +1,4 @@
-#THEHIVE_KEY = "your-thehive-key"
+THEHIVE_KEY = "your-thehive-key"
 #!/usr/bin/env python3
 #THEHIVE_URL = "https://192.168.200.1:8443"
 THEHIVE_URL = "https://172.24.80.95:8443"
