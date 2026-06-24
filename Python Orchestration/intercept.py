@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-# intercept.py – SOC Real-Time Alert Interceptor
-# ═══════════════════════════════════════════════════════════
-#
-#  Mirrors what the Wazuh Threat-Hunting dashboard shows:
-#    • Tails both alerts.json AND archives.json in real-time
-#    • Filters LOW → CRITICAL (configurable via MIN_SEVERITY)
-#    • Brute-force escalation with sliding-window counters
-#    • Deduplication with per-agent, per-rule, per-file keying
-#    • In-memory correlation engine (agent-aware, multi-rule signatures)
-#    • Day-boundary tracking with automatic daily summaries
-#    • Graceful shutdown on SIGTERM and SIGINT
-#
-#  Usage:
-#    python3 intercept.py                 # tail mode (default)
-#    python3 intercept.py --replay        # replay existing files
-#    python3 intercept.py --debug         # verbose skip logging
-# ═══════════════════════════════════════════════════════════
-
 from __future__ import annotations
-
 import argparse
 import json
 import logging
