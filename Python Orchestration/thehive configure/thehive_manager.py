@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-thehive_manager.py – TheHive case creation with dedup and distinct return values.
-
-Return contract for process_alert() and process_correlation():
-    str   – TheHive case ID: case was created successfully
-    False – dedup-skipped: same (rule_id, srcip) seen within CASE_DEDUP_SEC
-    None  – failure (API error, dry-run, or below min severity)
-"""
-
+import json as _json
 import logging
 import time
 from typing import Optional, Union
@@ -25,14 +17,6 @@ DEDUP_SKIPPED = False
 
 
 class TheHiveCaseManager:
-    """
-    Wraps TheHiveClient to:
-      • enforce a minimum severity threshold before creating cases
-      • deduplicate cases: same (rule_id, srcip) within CASE_DEDUP_SEC
-        returns False instead of hitting the API again
-      • return distinct values so the caller can update counters correctly
-    """
-
     def __init__(
         self,
         client,
@@ -52,9 +36,6 @@ class TheHiveCaseManager:
             f"min_sev={case_min_severity}  dedup={case_dedup_sec}s  "
             f"dry_run={dry_run}"
         )
-
-    # ── public API ────────────────────────────────────────────────────────
-
     def process_alert(self, alert: dict) -> Union[str, bool, None]:
         severity = alert.get("severity", "LOW")
 
@@ -147,9 +128,6 @@ class TheHiveCaseManager:
     def reset(self) -> None:
         self._last_sent.clear()
         logger.debug("TheHiveCaseManager.reset: dedup store cleared")
-
-    # ── private helpers ───────────────────────────────────────────────────
-
     @staticmethod
     def _build_alert_case(alert: dict, severity: str) -> dict:
         rule_id   = alert.get("rule_id", "?")
@@ -157,15 +135,24 @@ class TheHiveCaseManager:
         srcip     = alert.get("srcip", "") or "N/A"
         dstip     = alert.get("dstip", "") or "N/A"
         agent     = alert.get("agent_name", "N/A")
-        agent_id  = alert.get("agent_id", "N/A")
+        agent_id  = alert.get("agent_id", "000")
         agent_ip  = alert.get("agent_ip", "") or "N/A"
         timestamp = alert.get("timestamp", "")
         location  = alert.get("location", "") or "N/A"
         mitre     = ", ".join(alert.get("mitre", [])) or "N/A"
         reason    = alert.get("reason", "") or desc
         full_log  = (alert.get("full_log") or "")[:700]
+        if not agent_id or agent_id == "N/A":
+            agent_id = "000"
 
         log_section = f"\n**Raw Log (truncated)**\n```\n{full_log}\n```" if full_log else ""
+        wazuh_metadata = _json.dumps({
+            "agent_id":  str(agent_id),
+            "agent_ip":  str(agent_ip) if agent_ip != "N/A" else "",   
+            "rule_id":   str(rule_id),
+            "alert_id":  str(alert.get("alert_id", "")) or timestamp,
+            "srcip":     str(srcip) if srcip != "N/A" else "",
+        })
 
         return {
             "title": f"[{severity}] Rule {rule_id} — {desc[:80]}",
@@ -184,29 +171,38 @@ class TheHiveCaseManager:
                 f"| Location    | {location} |\n"
                 f"| MITRE       | {mitre} |\n"
                 f"{log_section}"
+                f"\n\n<!--WAZUH_METADATA {wazuh_metadata} -->"
             ),
             "severity": SEVERITY_MAP.get(severity, 1),
             "tlp":  2,
             "pap":  2,
-            "tags": ["wazuh", "soc", severity.lower(), f"rule:{rule_id}"],
-            "flag": severity == "CRITICAL",
-            "customFields": {
-                "wazuh_agent_id": {
-                    "string": alert.get("agent_id", "")
-                },
-                "wazuh_alert_id": {
-                    "string": alert.get("alert_id", "") or alert.get("timestamp", "")
-                },
-                "wazuh_rule_id": {
-                    "string": alert.get("rule_id", "")
-                }
-            }
+            "tags": [
+                "wazuh",
+                "soc",
+                severity.lower(),
+                f"rule:{rule_id}",
+                f"agent:{agent_id}",
+                f"srcip:{srcip}",
+                f"agentip:{agent_ip}",
+            ],
+            "flag": severity == "CRITICAL"
         }
 
     @staticmethod
     def _build_correlation_case(corr: dict, agent_id: str, sev: str) -> dict:
         name = corr.get("name", "UNKNOWN_CORRELATION")
         desc = corr.get("description", "")
+
+        if not agent_id or agent_id == "N/A":
+            agent_id = "000"
+
+        wazuh_metadata = _json.dumps({
+            "agent_id": str(agent_id),
+            "agent_ip": "",   
+            "rule_id":  f"CORR:{name}",
+            "alert_id": f"CORR:{name}",
+            "srcip":    "",
+        })
 
         return {
             "title": f"[CORRELATION] {name}",
@@ -218,10 +214,17 @@ class TheHiveCaseManager:
                 f"| Severity   | {sev} |\n"
                 f"| Agent ID   | {agent_id} |\n"
                 f"| Detail     | {desc} |\n"
+                f"\n\n<!--WAZUH_METADATA {wazuh_metadata} -->"
             ),
             "severity": SEVERITY_MAP.get(sev, 3),
             "tlp":  2,
             "pap":  2,
-            "tags": ["wazuh", "correlation", sev.lower()],
-            "flag": sev == "CRITICAL",
+            "tags": [
+                "wazuh",
+                "correlation",
+                sev.lower(),
+                f"agent:{agent_id}",
+                f"rule:CORR:{name}",
+            ],
+            "flag": sev == "CRITICAL"
         }
