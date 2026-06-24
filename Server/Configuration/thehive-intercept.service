@@ -1,0 +1,22 @@
+#Configure to automated enable thehive-intercept.py on this location:/etc/systemd/system/thehive-intercept.service
+[Unit]
+Description=Wazuh SOC → TheHive + Gmail Interceptor
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/wazuh-user/Wazuh-Part/thehive-configure
+Environment="THEHIVE_KEY=your-api-key"
+Environment="WAZUH_API_PASS=your-wazuh-api-key"
+Environment="GMAIL_USER=sop98886@gmail.com"
+Environment="GMAIL_PASS=gmail-app-pass"
+Environment="ALERT_TO=tithsopanha0@gmail.com"
+ExecStart=/usr/bin/python3 /home/wazuh-user/Wazuh-Part/thehive-configure/thehive-intercept.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
