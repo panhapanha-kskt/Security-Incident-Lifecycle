@@ -1,26 +1,5 @@
 #!/usr/bin/env python3
-"""
-gmail_alert.py – Gmail alerting module for the Wazuh SOC platform.
-
-Can be used in two ways:
-  1. Imported as a library by thehive-intercept.py (primary use)
-  2. Run standalone for testing: python3 gmail_alert.py
-
-Required environment variables (when used):
-  GMAIL_USER   your Gmail address (e.g. you@gmail.com)
-  GMAIL_PASS   a Gmail App Password (NOT your login password)
-  ALERT_TO     recipient address (e.g. soc-team@example.com)
-
-FIX A: added 'from __future__ import annotations' so that 'float | None'
-        union syntax works on Python 3.9 as well as 3.10+.
-FIX B: send() now raises SMTPDeliveryError on actual SMTP failure instead of
-        silently returning False, so _send_email_and_log() in thehive-intercept.py
-        can correctly increment email_err for delivery failures vs dedup/sev skips.
-FIX (original): env vars loaded lazily so importing the module never raises KeyError.
-"""
-
-from __future__ import annotations   # FIX A: enables X | Y union syntax on Python 3.9+
-
+from __future__ import annotations   
 import json
 import os
 import signal
@@ -35,39 +14,22 @@ from classifier import SEVERITY_ORDER
 from config import ALERT_FILE, ARCHIVES_FILE, POLL_INTERVAL
 from display import C, show
 from interceptor import MultiTailer, build_alert
-
-# ── SMTP settings ─────────────────────────────────────────────────────────────
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT   = 587
-
-# Intentionally empty at module level — populated by _load_gmail_config().
-# Importing this module is always safe, even without env vars set.
 SMTP_USER     = ""
 SMTP_PASSWORD = ""
 ALERT_EMAIL   = ""
 
-EMAIL_DEDUP_SEC = 300   # default dedup: same (rule_id, srcip) suppressed for 5 min
-
-
-# FIX B: custom exception so callers can distinguish delivery failure from skip
+EMAIL_DEDUP_SEC = 300  
 class SMTPDeliveryError(Exception):
     """Raised by GmailAlerter.send() when SMTP fails (not on dedup/sev skip)."""
-
-
 def _load_gmail_config() -> bool:
-    """
-    Read Gmail credentials from environment variables.
-    Returns True if all three are present, False otherwise.
-    Safe to call multiple times.
-    """
     global SMTP_USER, SMTP_PASSWORD, ALERT_EMAIL
     SMTP_USER     = os.environ.get("GMAIL_USER", "").strip()
     SMTP_PASSWORD = os.environ.get("GMAIL_PASS", "").strip()
     ALERT_EMAIL   = os.environ.get("ALERT_TO",   "").strip()
     return bool(SMTP_USER and SMTP_PASSWORD and ALERT_EMAIL)
 
-
-# ── Severity colour map for HTML email ───────────────────────────────────────
 SEV_COLOR_CSS = {
     "CRITICAL": {"accent": "#E24B4A", "bg": "#791F1F", "dim": "rgba(226,75,74,.12)"},
     "HIGH":     {"accent": "#EF9F27", "bg": "#633806", "dim": "rgba(239,159,39,.12)"},
@@ -76,8 +38,6 @@ SEV_COLOR_CSS = {
     "INFO":     {"accent": "#888780", "bg": "#444441", "dim": "rgba(136,135,128,.12)"},
 }
 
-
-# ── HTML email builder ────────────────────────────────────────────────────────
 def build_html_email(alert: dict) -> str:
     sev     = alert.get("severity", "INFO")
     colors  = SEV_COLOR_CSS.get(sev, SEV_COLOR_CSS["INFO"])
@@ -252,20 +212,7 @@ def build_html_email(alert: dict) -> str:
 </td></tr></table>
 </body></html>"""
 
-
-# ── Gmail sender ──────────────────────────────────────────────────────────────
 class GmailAlerter:
-    """
-    Send HTML security-alert emails via Gmail SMTP.
-
-    send() return contract:
-        True  — email delivered successfully
-        False — silently skipped (disabled / below min severity / within dedup window)
-        raises SMTPDeliveryError — SMTP connection or auth failed
-
-    This lets _send_email_and_log() in thehive-intercept.py correctly
-    distinguish delivery failures (increment email_err) from expected skips.
-    """
 
     EMAIL_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM"}
 
@@ -280,13 +227,6 @@ class GmailAlerter:
             )
 
     def send(self, alert: dict) -> bool:
-        """
-        Attempt to send an alert email.
-
-        Returns True on success, False on expected skip.
-        Raises SMTPDeliveryError on actual SMTP failure so the caller
-        can count it as an error.
-        """
         if not self._enabled:
             return False
 
@@ -326,9 +266,6 @@ class GmailAlerter:
             f"Team: Kosal Karuna · Cho Davon · Tith Sopanha\n"
             f"FOR OFFICIAL SOC USE ONLY"
         )
-
-        # FIX B: raise on SMTP failure instead of silently returning False,
-        # so the caller (_send_email_and_log) can increment email_err.
         try:
             msg = MIMEMultipart("alternative")
             msg["From"]    = SMTP_USER
@@ -348,28 +285,22 @@ class GmailAlerter:
             return True
 
         except Exception as exc:
-            # Re-raise as SMTPDeliveryError so the caller knows this is a
-            # real failure, not a normal skip.
             raise SMTPDeliveryError(str(exc)) from exc
 
     def cleanup(self, now: Optional[float] = None) -> None:
-        """Evict expired dedup entries (call periodically from main loop)."""
+        
         t      = now if now is not None else time.time()
         cutoff = t - self._dedup_sec
         self._last_sent = {k: v for k, v in self._last_sent.items() if v > cutoff}
 
     def reset(self) -> None:
-        """Clear all dedup state on day-boundary rollover."""
+       
         self._last_sent.clear()
 
 
 # ── Standalone entry point (for testing only) ─────────────────────────────────
 def main() -> None:
-    """
-    Standalone test runner.
-    Run directly: python3 gmail_alert.py
-    In production, thehive-intercept.py calls GmailAlerter directly.
-    """
+
     if not _load_gmail_config():
         print(
             f"\n  {C.RED}[FATAL]{C.RESET} Set GMAIL_USER, GMAIL_PASS, and ALERT_TO "
