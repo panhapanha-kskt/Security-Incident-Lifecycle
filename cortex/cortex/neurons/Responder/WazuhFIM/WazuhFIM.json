@@ -1,0 +1,49 @@
+{
+  "name": "WazuhFIM_1_0",
+  "version": "1.0",
+  "author": "NhaKachh",
+  "url": "https://github.com/panhapanha-kskt",
+  "license": "AGPL-V3",
+  "description": "Wazuh FIM Responder — snapshot critical files and isolate agent on repeated mods",
+  "dataTypeList": ["thehive:case"],
+  "command": "WazuhFIM/wazuh_fim.py",
+  "baseConfig": "WazuhFIM",
+  "config": {},
+  "configurationItems": [
+    {
+      "name": "wazuh_manager",
+      "type": "string",
+      "multi": false,
+      "required": true,
+      "description": "Wazuh manager API URL (e.g. https://192.168.200.129:55000)"
+    },
+    {
+      "name": "wazuh_user",
+      "type": "string",
+      "multi": false,
+      "required": true,
+      "description": "Wazuh API username"
+    },
+    {
+      "name": "wazuh_password",
+      "type": "string",
+      "multi": false,
+      "required": true,
+      "description": "Wazuh API password"
+    },
+    {
+      "name": "thehive_url",
+      "type": "string",
+      "multi": false,
+      "required": false,
+      "description": "TheHive API URL (e.g. http://thehive:9000)"
+    },
+    {
+      "name": "thehive_key",
+      "type": "string",
+      "multi": false,
+      "required": false,
+      "description": "TheHive API key for fetching case details"
+    }
+  ]
+}
