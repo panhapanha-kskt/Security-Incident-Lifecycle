@@ -1,6 +1,7 @@
 # SOC Attack Simulation Guide
 **For official SOC lab use only — controlled environment**
-<img width="1920" height="1080" alt="Timeline" src="https://github.com/user-attachments/assets/284a301c-f125-4085-a51f-389bba5e9dc2" />
+<img width="1920" height="1080" alt="Architecture" src="https://github.com/user-attachments/assets/98d26315-dbe8-4ddd-9bce-13ab8af2a754" />
+
 ---
 ### Proof of Concept for SOC Lab
 <img width="2559" height="1599" alt="image" src="https://github.com/user-attachments/assets/a51f739b-2e80-426b-992b-f691ca54a385" />
