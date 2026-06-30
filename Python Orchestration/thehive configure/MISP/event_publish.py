@@ -8,9 +8,18 @@ import urllib.error
 import ssl
 from datetime import datetime, timezone
 MISP_URL         = "https://172.24.80.95:9001"
-API_KEY          = "Co5rx7Fnye9TEfSp1q6cZmIUiKn4XXI2M0Ize6lI"
+API_KEY          = "Your-MISP-API-Key"
 VERIFY_SSL       = False
-DISTRIBUTION_ALL = 3
+DISTRIBUTION_ALL = 3 
+TLP_DISTRIBUTION = {
+    "tlp:white": 3,
+    "tlp:clear": 3,
+    "tlp:green": 3, # default 2
+    "tlp:amber": 3, # default 1
+    "tlp:amber+strict": 0,
+    "tlp:red":   0,
+}
+DEFAULT_DISTRIBUTION = 3  # used if a rule has no tlp:* tag — safest non-public default
 ENRICHMENT = {
     # ── Rule 100101: Reverse Shell Tool
     "100101": {
@@ -67,8 +76,15 @@ ENRICHMENT = {
             'misp-galaxy:mitre-attack-pattern="Application Layer Protocol - T1071"',
             'misp-galaxy:mitre-attack-pattern="Protocol Tunneling - T1572"',
         ],
+        "taxonomy_tags": [
+            'tlp:amber',
+            'admiralty-scale:source-reliability="b"',
+            'admiralty-scale:information-credibility="2"',
+            'circl:incident-classification="system-compromise"',
+            'workflow:state="incomplete"',
+        ],
     },
-    # ── Rule 110012: Tetragon shell execution 
+    # ── Rule 110012: Tetragon shell execution
     "110012": {
         "attributes": [
             {
@@ -122,8 +138,14 @@ ENRICHMENT = {
             'misp-galaxy:mitre-attack-pattern="Escape to Host - T1611"',
             'misp-galaxy:mitre-attack-pattern="Remote Services - T1021"',
         ],
+        "taxonomy_tags": [
+            'tlp:amber',
+            'admiralty-scale:source-reliability="b"',
+            'admiralty-scale:information-credibility="2"',
+            'circl:incident-classification="intrusion-attempt"',
+        ],
     },
-    # ── Rule 100117: Critical file modified 
+    # ── Rule 100117: Critical file modified
     "100117": {
         "attributes": [
             {
@@ -170,6 +192,12 @@ ENRICHMENT = {
             'misp-galaxy:mitre-attack-pattern="Account Manipulation - T1098"',
             'misp-galaxy:mitre-attack-pattern="Create Account - T1136"',
             'misp-galaxy:mitre-attack-pattern="File and Directory Permissions Modification - T1222"',
+        ],
+        "taxonomy_tags": [
+            'tlp:amber',
+            'admiralty-scale:source-reliability="b"',
+            'admiralty-scale:information-credibility="3"',
+            'circl:incident-classification="system-compromise"',
         ],
     },
     # ── Rule 100123: Repeated critical file mods
@@ -218,6 +246,12 @@ ENRICHMENT = {
         "galaxy_tags": [
             'misp-galaxy:mitre-attack-pattern="Account Manipulation - T1098"',
             'misp-galaxy:mitre-attack-pattern="File and Directory Permissions Modification - T1222"',
+        ],
+        "taxonomy_tags": [
+            'tlp:amber',
+            'admiralty-scale:source-reliability="b"',
+            'admiralty-scale:information-credibility="2"',
+            'circl:incident-classification="system-compromise"',
         ],
     },
     # ── Rule 5710: SSH attempt non-existent user
@@ -269,8 +303,14 @@ ENRICHMENT = {
             'misp-galaxy:mitre-attack-pattern="Brute Force - T1110"',
             'misp-galaxy:mitre-attack-pattern="Password Guessing - T1110.001"',
         ],
+        "taxonomy_tags": [
+            'tlp:green',
+            'admiralty-scale:source-reliability="c"',
+            'admiralty-scale:information-credibility="3"',
+            'circl:incident-classification="scanning"',
+        ],
     },
-    # ── Rule 5712: SSH brute force 
+    # ── Rule 5712: SSH brute force
     "5712": {
         "attributes": [
             {
@@ -317,8 +357,20 @@ ENRICHMENT = {
             'misp-galaxy:mitre-attack-pattern="Valid Accounts - T1078"',
             'misp-galaxy:mitre-attack-pattern="Brute Force - T1110"',
         ],
+        "taxonomy_tags": [
+            'tlp:amber',
+            'admiralty-scale:source-reliability="b"',
+            'admiralty-scale:information-credibility="2"',
+            'circl:incident-classification="brute-force"',
+        ],
     },
 }
+def get_distribution_for_rule(rule_id: str) -> int:
+    spec = ENRICHMENT.get(rule_id, {})
+    for tag in spec.get("taxonomy_tags", []):
+        if tag.startswith("tlp:"):
+            return TLP_DISTRIBUTION.get(tag, DEFAULT_DISTRIBUTION)
+    return DEFAULT_DISTRIBUTION
 def _ctx() -> ssl.SSLContext:
     ctx = ssl.create_default_context()
     if not VERIFY_SSL:
@@ -361,8 +413,12 @@ def extract_rule_id(event_info: str) -> str:
 def enrich_event(event_id: str, rule_id: str) -> None:
     spec = ENRICHMENT.get(rule_id)
     if not spec:
-        return  
-    print(f"  [~] Enriching event {event_id} for Rule {rule_id}")
+        return
+
+    distribution = get_distribution_for_rule(rule_id)
+    print(f"  [~] Enriching event {event_id} for Rule {rule_id}  "
+          f"(distribution={distribution}/{DIST_LABELS.get(distribution, '?')})")
+    # ── 1. Attributes ────────────────────────────────────────────────
     attrs_ok = attrs_skip = attrs_fail = 0
     for attr in spec["attributes"]:
         payload = {
@@ -372,18 +428,22 @@ def enrich_event(event_id: str, rule_id: str) -> None:
             "value":        attr["value"],
             "comment":      attr.get("comment", ""),
             "to_ids":       attr.get("to_ids", False),
-            "distribution": DISTRIBUTION_ALL,
+            "distribution": distribution,
         }
         resp = misp_post(f"/attributes/add/{event_id}", payload)
+        short_val = str(attr["value"])[:60]
         if "_error" in resp:
             err = resp["_error"].lower()
             if "already" in err or "exist" in err or resp.get("_code") == 403:
                 attrs_skip += 1
+                print(f"      [·] Skipped (duplicate): {attr['type']}={short_val}")
             else:
                 attrs_fail += 1
+                print(f"      [✗] Failed: {attr['type']}={short_val} — {resp['_error'][:150]}")
         else:
             attrs_ok += 1
     print(f"      Attributes : {attrs_ok} added  {attrs_skip} skipped  {attrs_fail} failed")
+    # ── 2. Galaxy tags (MITRE ATT&CK) ───────────────────────────────
     tags_ok = tags_skip = tags_fail = 0
     for tag in spec["galaxy_tags"]:
         resp = misp_post(f"/events/addTag/{event_id}", {"tag": tag})
@@ -396,6 +456,23 @@ def enrich_event(event_id: str, rule_id: str) -> None:
         else:
             tags_ok += 1
     print(f"      Galaxy tags: {tags_ok} added  {tags_skip} skipped  {tags_fail} failed")
+
+    # ── 3. Taxonomy tags (TLP / Admiralty Scale / CIRCL / workflow) ─
+    taxonomy_tags = spec.get("taxonomy_tags", [])
+    if taxonomy_tags:
+        tax_ok = tax_skip = tax_fail = 0
+        for tag in taxonomy_tags:
+            resp = misp_post(f"/events/addTag/{event_id}", {"tag": tag})
+            if "_error" in resp:
+                err = resp["_error"].lower()
+                if "already" in err or "exist" in err:
+                    tax_skip += 1
+                else:
+                    tax_fail += 1
+                    print(f"      [!] Taxonomy tag failed: {tag} — {resp['_error'][:120]}")
+            else:
+                tax_ok += 1
+        print(f"      Taxonomy   : {tax_ok} added  {tax_skip} skipped  {tax_fail} failed")
 def fetch_events(hours: int, limit: int) -> list:
     print(f"[*] MISP URL  : {MISP_URL}")
     print(f"[*] Time range: last {hours} hour(s)  |  limit: {limit}\n")
@@ -423,23 +500,23 @@ def fetch_single_event(event_id: int) -> list:
 def get_live_status(event_id: str) -> dict:
     resp = misp_get(f"/events/view/{event_id}")
     return resp.get("Event", {})
-def set_distribution(event_id: str) -> bool:
+def set_distribution(event_id: str, distribution: int = DISTRIBUTION_ALL) -> bool:
     resp = misp_post(f"/events/edit/{event_id}", {
         "Event": {
-            "distribution": DISTRIBUTION_ALL,
+            "distribution": distribution,
             "published":    True,
         }
     })
     if "_error" in resp:
         return False
     e = resp.get("Event", {})
-    return int(e.get("distribution", -1)) == DISTRIBUTION_ALL
-def publish_event(event_id: str) -> bool:
+    return int(e.get("distribution", -1)) == distribution
+def publish_event(event_id: str, distribution: int = DISTRIBUTION_ALL) -> bool:
     misp_post(f"/events/publish/{event_id}", {})
     misp_post(f"/events/edit/{event_id}", {
         "Event": {
             "published":    True,
-            "distribution": DISTRIBUTION_ALL,
+            "distribution": distribution,
         }
     })
     live = get_live_status(event_id)
@@ -495,7 +572,7 @@ def print_table(events: list, hours: int) -> None:
     print(f"Total: {len(events)} event(s)\n")
 def publish_events(events: list) -> None:
     print("\n" + "=" * 62)
-    print(f"  Publishing {len(events)} event(s) → All Communities")
+    print(f"  Publishing {len(events)} event(s) — distribution per TLP tag")
     print("=" * 62 + "\n")
     success = 0
     failed  = 0
@@ -507,25 +584,26 @@ def publish_events(events: list) -> None:
             continue
         print(f"[>] Event {eid} — {info}")
         rule_id = extract_rule_id(e.get("info", ""))
+        distribution = get_distribution_for_rule(rule_id) if rule_id in ENRICHMENT else DEFAULT_DISTRIBUTION
         if rule_id in ENRICHMENT:
             enrich_event(eid, rule_id)
         else:
-            print(f"  [·] No enrichment defined for Rule {rule_id or '?'} — skipping")
+            print(f"  [·] No enrichment defined for Rule {rule_id or '?'} — using default distribution")
         if is_published(e):
             dist = int(e.get("distribution", 0))
-            if dist == DISTRIBUTION_ALL:
-                print(f"  [✓] Already published to All communities — skipping")
+            if dist == distribution:
+                print(f"  [✓] Already published at correct distribution ({DIST_LABELS.get(dist, '?')}) — skipping")
                 print(f"  [→] {MISP_URL}/events/view/{eid}\n")
                 success += 1
                 continue
-        ok = set_distribution(eid)
+        ok = set_distribution(eid, distribution)
         if ok:
-            print(f"  [✓] Distribution → All communities (3)")
+            print(f"  [✓] Distribution → {DIST_LABELS.get(distribution, '?')} ({distribution})")
         else:
             print(f"  [✗] Failed to set distribution")
             failed += 1
             continue
-        ok = publish_event(eid)
+        ok = publish_event(eid, distribution)
         if ok:
             print(f"  [✓] Published — verified via live re-fetch")
             print(f"  [→] {MISP_URL}/events/view/{eid}")
@@ -586,7 +664,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--publish",      action="store_true",
                    help="Enrich applicable events then publish all to All Communities")
     p.add_argument("--enrich-only",  action="store_true",
-                   help="Add attributes/galaxy tags to already-published events (no publish step)")
+                   help="Add attributes/galaxy/taxonomy tags to already-published events (no publish step)")
     p.add_argument("--id",           type=int, default=0,
                    help="Target a single event by ID")
     p.add_argument("--output",       default="",
@@ -618,9 +696,9 @@ if __name__ == "__main__":
 """
     python publish_event.py                          # list events (last 4h)
     python publish_event.py --hours 48               # list events (last 48h)
-    python publish_event.py --publish                # enrich + publish all found events
+    python publish_event.py --publish                # enrich (attrs+galaxy+taxonomy) + publish all found events
     python publish_event.py --publish --id 5222      # enrich + publish single event
-    python publish_event.py --enrich-only            # patch already-published empty events
+    python publish_event.py --enrich-only            # patch already-published events with attrs+galaxy+taxonomy
     python publish_event.py --enrich-only --id 5254  # patch a single already-published event
     python publish_event.py --output out.json        # save raw JSON to file
 """
