@@ -1,0 +1,10 @@
+[Unit]
+Description=Run MISP pipeline daily at 12PM Phnom Penh time (UTC+7)
+
+[Timer]
+OnCalendar=*-*-* 05:00:00
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target
