@@ -1,0 +1,11 @@
+[Unit]
+Description=MISP export/enrich/publish pipeline (TheHive → MISP)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/wazuh-user/Wazuh-Part/thehive-configure/MISP
+ExecStart=/bin/bash /home/wazuh-user/Wazuh-Part/thehive-configure/MISP/MISP_Pipeline.sh
+User=root
+TimeoutStartSec=180
