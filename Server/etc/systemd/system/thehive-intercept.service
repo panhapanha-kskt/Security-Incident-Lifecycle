@@ -1,0 +1,22 @@
+[Unit]
+Description=Wazuh SOC → TheHive + Gmail Interceptor (ASIL)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/wazuh-user/Wazuh-Part/thehive-configure
+Environment="THEHIVE_KEY=Your-api-key"
+Environment="WAZUH_API_PASS=your-api-pass"
+Environment="CORTEX_KEY=your-key"
+Environment="GMAIL_USER=sop98886@gmail.com"
+Environment="GMAIL_PASS=your-gmail-pass"
+Environment="ALERT_TO=tithsopanha0@gmail.com"
+ExecStart=/usr/bin/python3 /home/wazuh-user/Wazuh-Part/thehive-configure/thehive-intercept.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
