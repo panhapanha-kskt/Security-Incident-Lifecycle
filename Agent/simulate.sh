@@ -16,7 +16,7 @@ DELAY=5
 LOG_FILE="/tmp/wazuh_sim_$(date +%Y%m%d_%H%M%S).log"
 FAKE_SSHD_LOG="/var/log/auth.log"
 AR_LOG="/var/ossec/logs/active-responses.log"
-ATTACKER_IP="10.10.10.99"
+ATTACKER_IP="104.28.155.126"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 ts()   { date '+%Y-%m-%d %H:%M:%S'; }
