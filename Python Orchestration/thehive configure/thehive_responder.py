@@ -87,6 +87,49 @@ def _trigger_responder_cortex_direct(case_id: str, responder_name: str) -> dict:
         "action_id": None,
         "error":     f"All Cortex direct attempts failed for '{responder_name}'",
     }
+
+def _trigger_responder_via_thehive(client, case_id: str, responder_name: str) -> dict:
+    variants = _CORTEX_UUID_MAP.get(responder_name)
+    if not variants:
+        return {
+            "status":    "failed",
+            "action_id": None,
+            "error":     f"No responder UUID configured for '{responder_name}'",
+        }
+
+    for variant_name, uuid in variants:
+        url = f"{client.url}/api/connector/cortex/action"
+        payload = {
+            "responderId": uuid,
+            "objectId":    case_id,
+            "objectType":  "case",
+        }
+        try:
+            resp = client.session.post(url, json=payload, timeout=client.timeout)
+            if resp.status_code in (200, 201):
+                body   = resp.json()
+                job_id = body.get("id") or body.get("_id") or body.get("cortexJobId") or "?"
+                logger.info(
+                    f"TheHive-routed responder triggered  case={case_id}  "
+                    f"responder={variant_name}  uuid={uuid}  job_id={job_id}"
+                )
+                return {"status": "triggered", "action_id": job_id, "error": None}
+            logger.warning(
+                f"TheHive action HTTP {resp.status_code}  case={case_id}  "
+                f"responder={variant_name}: {resp.text[:200]}"
+            )
+        except Exception as exc:
+            logger.warning(
+                f"TheHive action exception  case={case_id}  "
+                f"responder={variant_name}: {exc}"
+            )
+
+    return {
+        "status":    "failed",
+        "action_id": None,
+        "error":     f"All TheHive-routed attempts failed for '{responder_name}'",
+    }
+
 def _extract_from_tags(tags: list, prefix: str) -> str:
     if not tags:
         return ""
@@ -168,6 +211,7 @@ class WazuhAPIClient:
         self.verify_ssl  = verify_ssl
         self._token:        Optional[str] = None
         self._token_expiry: float         = 0.0
+
     def _get_token(self) -> Optional[str]:
         now = time.time()
         if self._token and now < self._token_expiry:
@@ -238,6 +282,7 @@ def _trigger_via_wazuh_direct(client, case_id, responder_name) -> dict:
     description   = case_data.get("description", "")
     tags          = case_data.get("tags", [])
     custom_fields = case_data.get("customFields") or {}
+
     agent_id = (
         _extract_from_tags(tags, "agent")
         or _extract_from_description_metadata(description, "agent_id")
@@ -248,6 +293,7 @@ def _trigger_via_wazuh_direct(client, case_id, responder_name) -> dict:
         summary["error"]  = f"agent_id not found  case={case_id}"
         return summary
     agent_id = str(agent_id).strip()
+
     srcip = (
         _extract_from_tags(tags, "srcip")
         or _extract_from_description_metadata(description, "srcip")
@@ -256,6 +302,7 @@ def _trigger_via_wazuh_direct(client, case_id, responder_name) -> dict:
     )
     if not _is_usable_ip(srcip):
         srcip = ""
+
     agent_ip = (
         _extract_from_tags(tags, "agentip")
         or _extract_from_description_metadata(description, "agent_ip")
@@ -264,6 +311,7 @@ def _trigger_via_wazuh_direct(client, case_id, responder_name) -> dict:
     )
     if not _is_usable_ip(agent_ip):
         agent_ip = ""
+
     command = ""
     arguments: list = []
     ip_used = ""
@@ -300,6 +348,7 @@ def _trigger_via_wazuh_direct(client, case_id, responder_name) -> dict:
     else:
         summary["error"] = f"Wazuh AR returned False  case={case_id}"
         logger.error(summary["error"])
+
     return summary
 def run_responder(
     client,
@@ -316,18 +365,20 @@ def run_responder(
         "ip_used":    None,
         "error":      None,
     }
+
     logger.info(f"run_responder  case={case_id}  responder={responder_name}")
-    result = _trigger_responder_cortex_direct(case_id, responder_name)
+    result = _trigger_responder_via_thehive(client, case_id, responder_name)
+
     if result["status"] == "triggered":
         summary["status"]    = "triggered"
         summary["action_id"] = result["action_id"]
         return summary
     logger.warning(
-        f"Cortex direct failed  case={case_id}  "
+        f"TheHive-routed trigger failed  case={case_id}  "
         f"error={result.get('error', '')}  — falling back to Wazuh API"
     )
     if not _WAZUH_PASS:
-        summary["error"] = f"Cortex direct failed and WAZUH_API_PASS not set. Error: {result.get('error', '')}"
+        summary["error"] = f"TheHive-routed trigger failed and WAZUH_API_PASS not set. Error: {result.get('error', '')}"
         logger.error(summary["error"])
         return summary
     fallback = _trigger_via_wazuh_direct(client, case_id, responder_name)
