@@ -1,10 +1,8 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-
 from config import (
     ALERT_FILE,
     CRITICAL_RULES,
@@ -23,8 +21,6 @@ IOC_RULE_SETS: tuple = (
 _NEWLINE_RE = re.compile(r"[\r\n\x00]")
 def _safe(value: object, max_len: int = 300) -> str:
     return _NEWLINE_RE.sub(" ", str(value or ""))[:max_len]
-
-
 class IOCClassifier:
     def load_alerts(self) -> list[dict]:
         alerts: list[dict] = []
@@ -55,7 +51,6 @@ class IOCClassifier:
                         )
         except PermissionError:
             print(f"[-] Error: Permission denied reading {ALERT_FILE}")
-
         return alerts
     def get_rule_id(self, alert: dict) -> str | None:
         try:
@@ -63,7 +58,6 @@ class IOCClassifier:
             return str(rid).strip() if rid else None
         except (KeyError, TypeError):
             return None
-
     def classify(self, rule_id: str | None) -> str:
         if not rule_id:
             return "Unknown"
@@ -78,12 +72,10 @@ class IOCClassifier:
         if rule_id in MALWARE_HASH_RULES:
             return "Malware Hash"
         return "Unknown"
-
     def is_ioc(self, rule_id: str | None) -> bool:
         if not rule_id:
             return False
         return any(rule_id in rs for rs in IOC_RULE_SETS)
-
     def classify_alert(self, alert: dict) -> dict:
         rule        = alert.get("rule") or {}
         agent       = alert.get("agent") or {}
@@ -101,7 +93,6 @@ class IOCClassifier:
         mitre_ids: list[str] = (
             mitre_raw.get("id", []) if isinstance(mitre_raw, dict) else []
         )
-
         return {
             "timestamp":   alert.get("timestamp", ""),
             "rule_id":     rule_id,
@@ -115,9 +106,10 @@ class IOCClassifier:
             "full_log":    str(alert.get("full_log") or "")[:700],
             "mitre":       mitre_ids,
             "data":        data_obj,
+            # syscheck sub-dict passed through so ObservableExtractor can
+            # pull typed hash fields (md5_after, sha256_after, etc.) directly
             "syscheck":    alert.get("syscheck") or {},
         }
-
     def process(self) -> dict[str, list[dict]]:
         results: dict[str, list[dict]] = {
             "Critical": [], "Malware Hash": [], "High": [],
@@ -137,7 +129,6 @@ class IOCClassifier:
                 f"and were placed in 'Unknown'."
             )
         return results
-
     def report(self, results: dict[str, list[dict]]) -> None:
         total = sum(len(v) for v in results.values())
         print(f"\n{'═' * 60}")
@@ -169,6 +160,7 @@ class IOCClassifier:
                     print(f"      FILE: {_safe(sc['path'], 200)}")
         print(f"\n{'═' * 60}\n")
     def write_log(self, results: dict[str, list[dict]]) -> None:
+        """Append a structured report to LOG_FILE."""
         log_path = Path(LOG_FILE)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         try:
