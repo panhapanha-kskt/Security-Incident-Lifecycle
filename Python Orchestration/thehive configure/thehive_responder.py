@@ -12,16 +12,16 @@ _WAZUH_MANAGER: str = os.environ.get("WAZUH_API_URL",  "https://192.168.200.129:
 _WAZUH_USER:    str = os.environ.get("WAZUH_API_USER", "wazuh-wui")
 _WAZUH_PASS:    str = os.environ.get("WAZUH_API_PASS", "")
 _CORTEX_URL: str = os.environ.get("CORTEX_URL", "https://172.24.80.95:9443")
-_CORTEX_KEY: str = os.environ.get("CORTEX_KEY", "zE58rzZN9Bxc+yU+I037r2XqmqRrGfAq")
+_CORTEX_KEY: str = os.environ.get("CORTEX_KEY", "your-cortex-key")
 RESPONDER_NETWORK: str = "Wazuh_1_0"
 RESPONDER_FIM:     str = "WazuhFIM_1_0"
 _CORTEX_UUID_MAP: dict[str, list[tuple[str, str]]] = {
     RESPONDER_NETWORK: [
-        ("Wazuh_1_0_1_0", "c45653768b9ab1e95aee1969a04a4c5d"),
-        ("Wazuh_1_0",     "9005ef9766e6885f2d29ed57372b4dbe"),
+        ("Wazuh_1_0_1_0", "your-responder-id"),
+        ("Wazuh_1_0",     "your-responder-id"),
     ],
     RESPONDER_FIM: [
-        ("WazuhFIM_1_0_1_0", "a3ea8a5fbd48194607e9f0cd502b5295"),
+        ("WazuhFIM_1_0_1_0", "your-responder-id"),
     ],
 }
 def _trigger_responder_cortex_direct(case_id: str, responder_name: str) -> dict:
@@ -311,7 +311,6 @@ def _trigger_via_wazuh_direct(client, case_id, responder_name) -> dict:
     )
     if not _is_usable_ip(agent_ip):
         agent_ip = ""
-
     command = ""
     arguments: list = []
     ip_used = ""
@@ -348,7 +347,6 @@ def _trigger_via_wazuh_direct(client, case_id, responder_name) -> dict:
     else:
         summary["error"] = f"Wazuh AR returned False  case={case_id}"
         logger.error(summary["error"])
-
     return summary
 def run_responder(
     client,
@@ -365,10 +363,8 @@ def run_responder(
         "ip_used":    None,
         "error":      None,
     }
-
     logger.info(f"run_responder  case={case_id}  responder={responder_name}")
     result = _trigger_responder_via_thehive(client, case_id, responder_name)
-
     if result["status"] == "triggered":
         summary["status"]    = "triggered"
         summary["action_id"] = result["action_id"]
