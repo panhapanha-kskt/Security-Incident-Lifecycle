@@ -1,39 +1,34 @@
-# display.py – Wazuh Threat-Hunting style console output
-# ═══════════════════════════════════════════════════════════
-#
-#  Renders each alert in a structured, analyst-friendly block
-#  that mirrors the information density of the Wazuh dashboard
-#  threat-hunting view — all in the terminal.
-# ═══════════════════════════════════════════════════════════
-
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import re
+import sys
+_USE_COLOR = sys.stdout.isatty()
 
-# ── ANSI colour palette ──────────────────────────────────────
+def _c(code: str) -> str:
+    return code if _USE_COLOR else ""
 class C:
-    RESET   = "\033[0m"
-    BOLD    = "\033[1m"
-    DIM     = "\033[2m"
-    ITALIC  = "\033[3m"
+    RESET   = _c("\033[0m")
+    BOLD    = _c("\033[1m")
+    DIM     = _c("\033[2m")
+    ITALIC  = _c("\033[3m")
 
-    BLUE    = "\033[38;5;27m"
-    CYAN    = "\033[38;5;51m"
-    STEEL   = "\033[38;5;153m"
-    SKY     = "\033[38;5;117m"
-    TEAL    = "\033[38;5;80m"
+    BLUE    = _c("\033[38;5;27m")
+    CYAN    = _c("\033[38;5;51m")
+    STEEL   = _c("\033[38;5;153m")
+    SKY     = _c("\033[38;5;117m")
+    TEAL    = _c("\033[38;5;80m")
 
-    WHITE   = "\033[38;5;255m"
-    LGRAY   = "\033[38;5;252m"
-    GRAY    = "\033[38;5;244m"
-    DGRAY   = "\033[38;5;238m"
+    WHITE   = _c("\033[38;5;255m")
+    LGRAY   = _c("\033[38;5;252m")
+    GRAY    = _c("\033[38;5;244m")
+    DGRAY   = _c("\033[38;5;238m")
 
-    RED     = "\033[38;5;196m"
-    ORANGE  = "\033[38;5;208m"
-    YELLOW  = "\033[38;5;226m"
-    GREEN   = "\033[38;5;47m"
-    PURPLE  = "\033[38;5;135m"
-    PINK    = "\033[38;5;213m"
+    RED     = _c("\033[38;5;196m")
+    ORANGE  = _c("\033[38;5;208m")
+    YELLOW  = _c("\033[38;5;226m")
+    GREEN   = _c("\033[38;5;47m")
+    PURPLE  = _c("\033[38;5;135m")
+    PINK    = _c("\033[38;5;213m")
 
     @staticmethod
     def sev(level: str) -> str:
@@ -48,19 +43,17 @@ class C:
     @staticmethod
     def sev_bg(level: str) -> str:
         return {
-            "CRITICAL": "\033[41;97;1m",
-            "HIGH":     "\033[48;5;166m\033[38;5;0m\033[1m",
-            "MEDIUM":   "\033[48;5;226m\033[38;5;0m",
-            "LOW":      "\033[48;5;24m\033[38;5;255m",
-            "INFO":     "\033[48;5;237m\033[38;5;244m",
-        }.get(level, "\033[7m")
-
+            "CRITICAL": _c("\033[41;97;1m"),
+            "HIGH":     _c("\033[48;5;166m\033[38;5;0m\033[1m"),
+            "MEDIUM":   _c("\033[48;5;226m\033[38;5;0m"),
+            "LOW":      _c("\033[48;5;24m\033[38;5;255m"),
+            "INFO":     _c("\033[48;5;237m\033[38;5;244m"),
+        }.get(level, _c("\033[7m"))
 
 # ── Security helpers ─────────────────────────────────────────
 _ANSI_RE   = re.compile(r'\x1B[@-_][0-?]*[ -/]*[@-~]')
 _CTRL_RE   = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 _INJECT_RE = re.compile(r'[\r\n]')
-
 
 def sanitize(text: str, max_len: int = 1000) -> str:
     s = _ANSI_RE.sub('', str(text))
@@ -79,13 +72,39 @@ def format_timestamp(iso_str: str) -> str:
     except (ValueError, AttributeError):
         return sanitize(iso_str, 40)
 
+_COMPACT_SEV_LABEL = {
+    "CRITICAL": "CRIT",
+    "HIGH":     "HIGH",
+    "MEDIUM":   "MED ",
+    "LOW":      "LOW ",
+    "INFO":     "INFO",
+}
+def show_compact(alert: dict) -> None:
+    sev        = alert.get("severity", "INFO")
+    rule_id    = sanitize(alert.get("rule_id", "—"), 20)
+    desc       = sanitize(alert.get("reason") or alert.get("description", ""), 90)
+    agent_name = sanitize(alert.get("agent_name", ""), 30)
+    agent_id   = sanitize(alert.get("agent_id", ""), 10)
+    srcip      = sanitize(alert.get("srcip", ""), 45)
+    ts_display = format_timestamp(alert.get("timestamp", ""))
+
+    sev_color = C.sev(sev)
+    label     = _COMPACT_SEV_LABEL.get(sev, (sev + "    ")[:4])
+    ip_part   = f"  {C.ORANGE}{srcip}{C.RESET}" if srcip else ""
+
+    print(
+        f"{C.DIM}{ts_display}{C.RESET}  "
+        f"{sev_color}{label}{C.RESET}  "
+        f"{C.CYAN}{rule_id:<8}{C.RESET} "
+        f"{C.WHITE}{agent_name}{C.RESET}{C.GRAY}({agent_id}){C.RESET}"
+        f"{ip_part}  "
+        f"{desc}"
+    )
 
 def _source_tag(source: str) -> str:
     if source == "archives":
         return f"{C.TEAL}[ARCHIVES]{C.RESET}"
     return f"{C.GREEN}[ALERTS  ]{C.RESET}"
-
-
 _BADGES = {
     "CRITICAL": "CRITICAL",
     "HIGH":     " HIGH   ",
@@ -93,7 +112,6 @@ _BADGES = {
     "LOW":      "  LOW   ",
     "INFO":     "  INFO  ",
 }
-
 def _badge(sev: str) -> str:
     label = _BADGES.get(sev, " UNKNOWN")
     return f"{C.sev_bg(sev)} {label} {C.RESET}"
@@ -111,14 +129,10 @@ def _top_divider(sev: str) -> str:
     if sev == "HIGH":
         return _DIV_HIGH
     return _DIV_HEAVY
-
-
 def _field(label: str, value: str, color: str = "") -> None:
     col = color or C.WHITE
     pad = f"{C.STEEL}{label:<14}{C.RESET}"
     print(f"  {pad}  {col}{value}{C.RESET}")
-
-
 def show(alert: dict) -> None:
     sev           = alert.get("severity", "INFO")
     rule_id       = sanitize(alert.get("rule_id", "—"), 20)
@@ -222,8 +236,6 @@ def show(alert: dict) -> None:
         _field("LOG", full_log, C.DIM)
 
     print(_DIV_LIGHT)
-
-
 def show_correlation(result: dict) -> None:
     sev  = result.get("severity", "HIGH")
     name = result.get("name", "UNKNOWN")
@@ -238,8 +250,6 @@ def show_correlation(result: dict) -> None:
     if desc:
         print(f"  {C.STEEL}{'DETAIL':<14}{C.RESET}  {C.YELLOW}{desc}{C.RESET}")
     print(f"{C.RED}{C.BOLD}{'▄' * 76}{C.RESET}\n")
-
-
 def show_stats(day, ctrs: dict, secs_left: float) -> None:
     hrs  = int(secs_left // 3600)
     mins = int((secs_left % 3600) // 60)
@@ -255,8 +265,6 @@ def show_stats(day, ctrs: dict, secs_left: float) -> None:
         f"  {C.GREEN}INFO:{ctrs['INFO']}{C.RESET}"
         f"  {C.GRAY}skip:{ctrs['skipped']}{C.RESET}"
     )
-
-
 def show_daily_summary(day, session_start, ctrs: dict, tz_name: str) -> None:
     # datetime and ZoneInfo are imported at the top of this module
     tz       = ZoneInfo(tz_name)
@@ -293,8 +301,6 @@ def show_daily_summary(day, session_start, ctrs: dict, tz_name: str) -> None:
         )
 
     print(f"{C.BLUE}╚{'═' * 58}╝{C.RESET}\n")
-
-
 def show_shutdown(day, session_start, ctrs: dict, tz_name: str) -> None:
     # datetime and ZoneInfo are imported at the top of this module
     tz       = ZoneInfo(tz_name)
