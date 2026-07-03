@@ -130,9 +130,11 @@ class ObservableExtractor:
     def _sanitize(value: str, max_len: int = 512) -> str:
         cleaned = re.sub(r"[\r\n\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", value)
         return cleaned[:max_len].strip()
+
     def extract(self, alert: dict) -> list[dict]:
         observables: list[dict] = []
         seen_pairs: set[tuple[str, str]] = set()
+
         def add(data_type: str, value: str, source: str, message: str = "") -> None:
             v = self._sanitize(value)
             if not v:
@@ -147,6 +149,7 @@ class ObservableExtractor:
                 "source":    source,
                 "message":   message or f"Extracted from field: {source}",
             })
+
         rule_id     = alert.get("rule_id", "")
         agent_name  = alert.get("agent_name", "?")
         agent_id    = alert.get("agent_id",   "?")
@@ -158,6 +161,7 @@ class ObservableExtractor:
         location    = str(alert.get("location")    or "")
         data_obj    = alert.get("data") or {}
         fim_ctx     = _syscheck_context(alert) if rule_id in _FIM_RULES else ""
+
         def _ip_note(label: str, ip: str, extra: str = "") -> str:
             parts = [
                 f"{label}",
@@ -194,6 +198,7 @@ class ObservableExtractor:
                 suri_sig = str(alert.get("suricata_signature") or "").strip()
                 extra = f"Suricata signature: {suri_sig}" if suri_sig else ""
                 add("ip", ip, f"data.{sub_key}", _ip_note(label, ip, extra))
+
         zeek = alert.get("zeek") or {}
         for sub_key, label in [("id.orig_h", "Zeek originator IP"), ("id.resp_h", "Zeek responder IP")]:
             ip = str(zeek.get(sub_key) or "").strip()
@@ -201,6 +206,7 @@ class ObservableExtractor:
                 svc = str(alert.get("zeek_service") or "").strip()
                 extra = f"Zeek service: {svc}" if svc else ""
                 add("ip", ip, f"zeek.{sub_key}", _ip_note(label, ip, extra))
+
         for blob_name, blob_text in [("full_log", full_log), ("description", description), ("location", location)]:
             if not blob_text:
                 continue
@@ -208,6 +214,7 @@ class ObservableExtractor:
                 note = _ip_note(f"IP found in {blob_name} via regex", ip,
                                 f"Context: {blob_text[:300]}")
                 add("ip", ip, f"{blob_name}[regex]", note)
+
         http_obj = data_obj.get("http") or {}
         ua = str(http_obj.get("http_user_agent") or "").strip()
         if ua:
@@ -220,6 +227,7 @@ class ObservableExtractor:
             if full_log:
                 parts.append(f"Raw log: {full_log[:300]}")
             add("user-agent", ua, "data.http.http_user_agent", "\n".join(parts))
+
         for blob_name, blob_text in [("full_log", full_log), ("description", description)]:
             if not blob_text:
                 continue
@@ -245,6 +253,7 @@ class ObservableExtractor:
                         f"Context: {blob_text[:300]}",
                     ]
                     add("user-agent", ua, f"{blob_name}[regex]", "\n".join(parts))
+
         if rule_id in _FIM_RULES or rule_id in MALWARE_HASH_RULES:
             sc = alert.get("syscheck") or {}
             file_path = str(sc.get("path") or alert.get("file_path") or "").strip()
@@ -287,15 +296,18 @@ class TheHiveObservableManager:
         self._cortex_id:             Optional[str]  = None
         self._analyzer_cache:        dict[str, str] = {}
         self._analyzer_cache_loaded: bool           = False
+
     def add_observables(self, case_id: str, alert: dict) -> dict:
         rule_id  = alert.get("rule_id", "")
         is_ioc   = _ioc_classifier.is_ioc(rule_id)
         category = _ioc_classifier.classify(rule_id)
         is_fim   = rule_id in _FIM_RULES
         is_brute = rule_id in _BRUTE_FORCE_RULES
+
         all_observables = self._extractor.extract(alert)
         observables = [o for o in all_observables if o["data_type"] in _ALLOWED_TYPES]
         type_skipped = len(all_observables) - len(observables)
+
         summary: dict = {
             "case_id":          case_id,
             "added":            0,
@@ -352,6 +364,7 @@ class TheHiveObservableManager:
                 if obs_id and self._cortex_id:
                     jobs = self._trigger_analyzers(obs_id, obs)
                     summary["analyzer_jobs"] += jobs
+
             elif result == "duplicate":
                 summary["skipped"] += 1
             else:
@@ -365,6 +378,7 @@ class TheHiveObservableManager:
             logger.debug(
                 f"No responder mapping for rule={rule_id} — skipped"
             )
+
         logger.info(
             f"Observable summary  case={case_id}  added={summary['added']}  "
             f"ioc={summary['ioc_count']}  hash={summary['hash_count']}  "
@@ -421,6 +435,7 @@ class TheHiveObservableManager:
             )
         except Exception as exc:
             logger.warning(f"Analyzer cache load failed: {exc} — will retry on next observable")
+
     def _trigger_analyzers(self, obs_id: str, obs: dict) -> int:
         data_type = obs["data_type"]
         if data_type == "ip":
@@ -444,8 +459,10 @@ class TheHiveObservableManager:
                 f"No analyzers configured for type={data_type} value={obs['value']}"
             )
             return 0
+
         url        = f"{self._client.url}/api/v1/connector/cortex/job"
         jobs_fired = 0
+
         for analyzer_name in analyzer_names:
             analyzer_id = self._analyzer_cache.get(analyzer_name)
             if not analyzer_id:
@@ -454,6 +471,7 @@ class TheHiveObservableManager:
                     f"Available: {list(self._analyzer_cache.keys())}"
                 )
                 continue
+
             payload = {
                 "cortexId":   self._cortex_id,
                 "analyzerId": analyzer_id,
@@ -490,6 +508,7 @@ class TheHiveObservableManager:
         return jobs_fired
     def _trigger_responders(self, case_id: str, alert: dict) -> dict:
         rule_id = str(alert.get("rule_id", ""))
+
         if rule_id in _FIM_RULES:
             responder_name = RESPONDER_FIM
         elif rule_id in _BRUTE_FORCE_RULES:
@@ -535,7 +554,7 @@ class TheHiveObservableManager:
         if dtype == "hash":
             return TLP_AMBER, PAP_AMBER
         if ioc_flag and dtype == "ip" and not is_priv:
-            return TLP_RED, PAP_AMBER
+            return TLP_AMBER, PAP_AMBER
         if is_priv:
             return TLP_GREEN, PAP_GREEN
         return TLP_AMBER, PAP_AMBER
@@ -595,7 +614,6 @@ class TheHiveObservableManager:
         rule_id    = str(alert.get("rule_id",    "?"))
         agent_name = str(alert.get("agent_name", "?"))
         severity   = str(alert.get("severity",   "INFO"))
-
         tags = [
             "wazuh",
             f"rule:{rule_id}",
@@ -630,6 +648,7 @@ class TheHiveObservableManager:
         for attempt in range(self._max_retries + 1):
             try:
                 resp = self._client.session.post(url, json=payload, timeout=self._client.timeout)
+
                 if resp.status_code in (200, 201):
                     body   = resp.json()
                     obs_id = (body[0].get("_id") if isinstance(body, list) and body
@@ -658,13 +677,13 @@ class TheHiveObservableManager:
                     )
                     time.sleep(self._retry_delay * (attempt + 1))
                     continue
+
                 return f"HTTP {resp.status_code}: {resp.text[:120]}", None
             except Exception as exc:
                 if attempt < self._max_retries:
                     time.sleep(self._retry_delay * (attempt + 1))
                     continue
                 return f"Exception: {exc}", None
-
         return "max retries exceeded", None
     @staticmethod
     def _extract_id_from_207(resp) -> Optional[str]:
@@ -699,6 +718,7 @@ class TheHiveObservableManager:
                 )
         except Exception as exc:
             logger.warning(f"Observable PATCH exception  id={obs_id}  error={exc}")
+# ── Module-level singleton
 _manager_singleton: Optional[TheHiveObservableManager] = None
 def attach_observables(
     client,
