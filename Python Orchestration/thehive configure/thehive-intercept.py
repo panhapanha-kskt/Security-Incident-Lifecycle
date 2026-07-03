@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-
 import sys
 from pathlib import Path
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-
 import argparse
 import json
 import logging
@@ -37,12 +34,13 @@ from correlator import Correlator
 from display import (
     C,
     show,
+    show_compact,
     show_correlation,
     show_daily_summary,
     show_shutdown,
     show_stats,
 )
-from interceptor import MultiTailer, build_alert
+from intercept import MultiTailer, build_alert
 from thehive_config import (
     CASE_DEDUP_SEC,
     CASE_MIN_SEVERITY,
@@ -56,21 +54,24 @@ from thehive_client import TheHiveClient
 from thehive_manager import TheHiveCaseManager
 from thehive_responder import run_responder
 from gmail_alert import GmailAlerter
+# ── Unified email dedup window 
 EMAIL_DEDUP_SEC_UNIFIED: int = int(os.environ.get("EMAIL_DEDUP_SEC", CASE_DEDUP_SEC))
+# ── API keys / credentials 
 _THEHIVE_KEY: str = os.environ.get("THEHIVE_KEY", "").strip()
 
 _GMAIL_USER:    str  = os.environ.get("GMAIL_USER", "").strip()
 _GMAIL_PASS:    str  = os.environ.get("GMAIL_PASS", "").strip()
 _GMAIL_TO:      str  = os.environ.get("ALERT_TO",   "").strip()
 _GMAIL_ENABLED: bool = bool(_GMAIL_USER and _GMAIL_PASS and _GMAIL_TO)
+_VERBOSE: bool = False
 _RESPONDER_NETWORK: str = "Wazuh_1_0"
 _RESPONDER_FIM:     str = "WazuhFIM_1_0"
 
+# ── Rule → Cortex responder routing
 _FIM_RULES: set[str] = {
     "100117", "100123",
     "550",    "553",    "554",
 }
-
 _NETWORK_RULES: set[str] = {
     "5503",   "5710",   "5712",
     "5715",   "5716",   "5758",
@@ -89,14 +90,13 @@ _NETWORK_RULES: set[str] = {
     "100907",
     "100101",
 }
-
-
 def _get_responder(rule_id: str) -> Optional[str]:
     if rule_id in _FIM_RULES:
         return _RESPONDER_FIM
     if rule_id in _NETWORK_RULES:
         return _RESPONDER_NETWORK
     return None
+# ── Counters
 def _fresh_counters() -> dict:
     return {
         "total":          0,
@@ -116,6 +116,7 @@ def _fresh_counters() -> dict:
         "email_sent":     0,
         "email_err":      0,
     }
+# ── Brute-force tracker 
 class _BruteForceTracker:
     def __init__(self) -> None:
         self._buckets: dict[str, deque[float]] = {}
@@ -147,8 +148,6 @@ class _BruteForceTracker:
 
     def reset(self) -> None:
         self._buckets.clear()
-
-
 def _escalate_brute_force(alert: dict, tracker: _BruteForceTracker) -> dict:
     rule_id = alert.get("rule_id", "")
     srcip   = alert.get("srcip", "")
@@ -181,6 +180,7 @@ def _escalate_brute_force(alert: dict, tracker: _BruteForceTracker) -> dict:
             f"in {BRUTE_FORCE_WINDOW}s"
         )
     return alert
+# ── Alert dedup 
 class _AlertDedup:
     def __init__(self) -> None:
         self._seen: dict[str, float] = {}
@@ -206,6 +206,7 @@ class _AlertDedup:
 
     def reset(self) -> None:
         self._seen.clear()
+# ── Day-boundary tracker 
 class _DayBoundary:
     def __init__(self, tz_name: str) -> None:
         try:
@@ -259,6 +260,7 @@ class _DayBoundary:
             tzinfo=self._tz,
         )
         return max(0.0, (tomorrow - now).total_seconds())
+# ── Argument parsing
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Wazuh SOC → TheHive + Gmail Unified Engine",
@@ -287,7 +289,11 @@ def _parse_args() -> argparse.Namespace:
                    help="Enable verbose debug logging")
     p.add_argument("--dry-run", dest="dry_run", action="store_true",
                    help="Display alerts but do NOT call the TheHive or Gmail APIs")
+    p.add_argument("--verbose", action="store_true",
+                   help="Show full per-alert detail + case/responder/email confirmations "
+                        "(default: compact one-line per alert, full detail still logged)")
     return p.parse_args()
+# ── Logging setup 
 def _setup_logging(debug: bool) -> None:
     log_path = Path(LOG_FILE).parent / "thehive_interceptor.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -307,6 +313,7 @@ def _setup_logging(debug: bool) -> None:
     ch.setLevel(logging.WARNING)
     ch.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     root.addHandler(ch)
+# ── Signal handling 
 _shutdown_requested: bool = False
 
 def _handle_signal(signum, frame) -> None:
@@ -319,6 +326,7 @@ def _run_responder_and_log(
     label:          str = "alert",
     responder_name: str = _RESPONDER_NETWORK,
 ) -> None:
+
     try:
         result = run_responder(
             client         = client,
@@ -327,15 +335,15 @@ def _run_responder_and_log(
             poll_result    = False,
         )
         status = result.get("status", "failed")
-
         if status == "triggered":
             ctrs["hive_resp_ok"] += 1
-            print(
-                f"  {C.TEAL}[RESPONDER]{C.RESET} case={case_id}"
-                f"  responder={responder_name}"
-                f"  action_id={result['action_id']}"
-                f"  ({label})"
-            )
+            if _VERBOSE:
+                print(
+                    f"  {C.TEAL}[RESPONDER]{C.RESET} case={case_id}"
+                    f"  responder={responder_name}"
+                    f"  action_id={result['action_id']}"
+                    f"  ({label})"
+                )
             logging.info(
                 f"Responder triggered  case={case_id}"
                 f"  action_id={result['action_id']}  label={label}"
@@ -343,33 +351,34 @@ def _run_responder_and_log(
 
         elif status == "skipped":
             ctrs["hive_resp_skip"] = ctrs.get("hive_resp_skip", 0) + 1
-            print(
-                f"  {C.GRAY}[RESPONDER SKIP]{C.RESET} case={case_id}"
-                f"  responder={responder_name}"
-                f"  reason={result.get('error','no reason given')}"
-                f"  ({label})"
-            )
+            if _VERBOSE:
+                print(
+                    f"  {C.GRAY}[RESPONDER SKIP]{C.RESET} case={case_id}"
+                    f"  responder={responder_name}"
+                    f"  reason={result.get('error','no reason given')}"
+                    f"  ({label})"
+                )
             logging.info(
                 f"Responder skipped (expected)  case={case_id}"
                 f"  reason={result.get('error','')}  label={label}"
             )
-
-        else:  
+        else:
             ctrs["hive_resp_err"] += 1
-            print(
-                f"  {C.ORANGE}[RESPONDER WARN]{C.RESET} case={case_id}"
-                f"  status={status}"
-                f"  error={result.get('error','')}"
-                f"  ({label})"
-            )
+            if _VERBOSE:
+                print(
+                    f"  {C.ORANGE}[RESPONDER WARN]{C.RESET} case={case_id}"
+                    f"  status={status}"
+                    f"  error={result.get('error','')}"
+                    f"  ({label})"
+                )
             logging.warning(
                 f"Responder failed  case={case_id}"
                 f"  status={status}  error={result.get('error','')}  label={label}"
             )
-
     except Exception as exc:
         ctrs["hive_resp_err"] += 1
         logging.error(f"run_responder raised unexpectedly case={case_id}: {exc}")
+# ── Gmail send helper
 def _send_email_and_log(
     gmail: GmailAlerter,
     alert: dict,
@@ -389,13 +398,15 @@ def _send_email_and_log(
         ctrs["email_err"] += 1
         logging.error(f"GmailAlerter.send raised unexpectedly: {exc}")
         print(f"  {C.RED}[EMAIL ERROR]{C.RESET} {exc}")
+# ── Main loop 
 def main() -> None:
     args = _parse_args()
     _setup_logging(args.debug)
 
+    global _VERBOSE
+    _VERBOSE = args.verbose
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT,  _handle_signal)
-
     if not _THEHIVE_KEY:
         print(
             f"\n  {C.RED}[FATAL]{C.RESET} THEHIVE_KEY not set. Export credentials first:\n"
@@ -420,7 +431,6 @@ def main() -> None:
     dry = args.dry_run
     if dry:
         print(f"  {C.YELLOW}[DRY-RUN MODE]{C.RESET} No TheHive or Gmail API calls will be made.\n")
-
     try:
         client = TheHiveClient(
             url        = THEHIVE_URL,
@@ -438,6 +448,7 @@ def main() -> None:
         dry_run           = dry,
         case_min_severity = CASE_MIN_SEVERITY,
         case_dedup_sec    = CASE_DEDUP_SEC,
+        verbose           = _VERBOSE
     )
 
     if not dry:
@@ -456,7 +467,7 @@ def main() -> None:
     gmail: Optional[GmailAlerter] = None
     if not dry:
         if _GMAIL_ENABLED:
-            gmail = GmailAlerter(dedup_sec=EMAIL_DEDUP_SEC_UNIFIED)
+            gmail = GmailAlerter(dedup_sec=EMAIL_DEDUP_SEC_UNIFIED, verbose=_VERBOSE)
             print(f"  {C.GREEN}[+] Gmail alerting enabled{C.RESET}  →  {_GMAIL_TO}\n")
             logging.info(f"Gmail alerting enabled  to={_GMAIL_TO}")
         else:
@@ -471,7 +482,6 @@ def main() -> None:
                 f"  {C.ORANGE}[WARN]{C.RESET} {label} file not found: "
                 f"{C.CYAN}{path}{C.RESET} — waiting for wazuh-manager…"
             )
-
     tail_mode   = not args.replay
     min_sev_val = SEVERITY_ORDER.get(MIN_SEVERITY, 2)
 
@@ -491,7 +501,6 @@ def main() -> None:
         f"gmail={'on' if _GMAIL_ENABLED else 'off'}  "
         f"dry={dry}"
     )
-
     try:
         while not _shutdown_requested:
             if day.rolled_over():
@@ -520,29 +529,23 @@ def main() -> None:
                     f"── New day: {day.active_day}  [{DAY_TIMEZONE}] ──"
                     f"{C.RESET}\n"
                 )
-
             got_events = False
-
             for source, line in tailer.read_new_lines():
                 if len(line) > 512_000:
                     logging.warning(
                         f"Oversized line ({len(line)}B) from {source} — skipped"
                     )
                     continue
-
                 try:
                     raw = json.loads(line)
                 except json.JSONDecodeError:
                     logging.debug(f"Bad JSON from {source}: {line[:120]}")
                     continue
-
                 if not isinstance(raw, dict):
                     continue
-
                 alert = build_alert(raw, source)
                 if alert is None:
                     continue
-
                 got_events = True
                 rule_id  = alert["rule_id"]
                 agent_id = alert.get("agent_id", "000")
@@ -556,17 +559,17 @@ def main() -> None:
                 if dedup.is_duplicate(alert):
                     ctrs["skipped"] += 1
                     continue
-
                 sev = alert["severity"]
                 ctrs["total"] += 1
                 ctrs[sev]      = ctrs.get(sev, 0) + 1
                 ctrs["src_alerts" if source == "alerts" else "src_archives"] += 1
-                show(alert)
+                if _VERBOSE:
+                    show(alert)
+                else:
+                    show_compact(alert)
                 case_id = manager.process_alert(alert)
-
                 if isinstance(case_id, str) and case_id:
                     ctrs["hive_cases"] += 1
-
                     if not dry:
                         obs_result = attach_observables(
                             client,
@@ -605,9 +608,7 @@ def main() -> None:
                             f"CORRELATION {corr['name']}  "
                             f"sev={corr['severity']}  agent={agent_id}"
                         )
-
                         corr_id = manager.process_correlation(corr, agent_id)
-
                         if isinstance(corr_id, str) and corr_id:
                             ctrs["hive_cases"] += 1
                             if not dry:
@@ -637,10 +638,8 @@ def main() -> None:
                                     _send_email_and_log(
                                         gmail, corr_alert, ctrs, label="correlation"
                                     )
-
                         elif corr_id is False:
                             ctrs["hive_skipped"] += 1
-
                 logging.info(
                     f"ALERT  src={source}  rule={rule_id}  sev={sev}"
                     f"  lvl={alert['level']}  agent={agent_id}"
@@ -668,7 +667,6 @@ def main() -> None:
                 )
             if not got_events:
                 time.sleep(POLL_INTERVAL)
-
     finally:
         show_shutdown(day.active_day, day.session_start, ctrs, DAY_TIMEZONE)
         logging.info(
