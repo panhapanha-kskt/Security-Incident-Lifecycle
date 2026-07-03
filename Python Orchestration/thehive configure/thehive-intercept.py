@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+
 import sys
 from pathlib import Path
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
 import argparse
 import json
 import logging
@@ -54,9 +57,11 @@ from thehive_client import TheHiveClient
 from thehive_manager import TheHiveCaseManager
 from thehive_responder import run_responder
 from gmail_alert import GmailAlerter
-# ── Unified email dedup window 
+
+# ── Unified email dedup window ────────────────────────────────────────────────
 EMAIL_DEDUP_SEC_UNIFIED: int = int(os.environ.get("EMAIL_DEDUP_SEC", CASE_DEDUP_SEC))
-# ── API keys / credentials 
+
+# ── API keys / credentials ────────────────────────────────────────────────────
 _THEHIVE_KEY: str = os.environ.get("THEHIVE_KEY", "").strip()
 
 _GMAIL_USER:    str  = os.environ.get("GMAIL_USER", "").strip()
@@ -64,14 +69,20 @@ _GMAIL_PASS:    str  = os.environ.get("GMAIL_PASS", "").strip()
 _GMAIL_TO:      str  = os.environ.get("ALERT_TO",   "").strip()
 _GMAIL_ENABLED: bool = bool(_GMAIL_USER and _GMAIL_PASS and _GMAIL_TO)
 _VERBOSE: bool = False
+# ── Cortex responder names ────────────────────────────────────────────────────
+# NOTE: These names are used ONLY as a local switch in thehive_responder.py.
+# thehive_responder.py bypasses Cortex entirely and calls the Wazuh REST API
+# directly, so Cortex's version-suffix behaviour (e.g. appending _1_0) does
+# NOT affect anything here.
 _RESPONDER_NETWORK: str = "Wazuh_1_0"
 _RESPONDER_FIM:     str = "WazuhFIM_1_0"
 
-# ── Rule → Cortex responder routing
+# ── Rule → Cortex responder routing ──────────────────────────────────────────
 _FIM_RULES: set[str] = {
     "100117", "100123",
     "550",    "553",    "554",
 }
+
 _NETWORK_RULES: set[str] = {
     "5503",   "5710",   "5712",
     "5715",   "5716",   "5758",
@@ -90,13 +101,17 @@ _NETWORK_RULES: set[str] = {
     "100907",
     "100101",
 }
+
+
 def _get_responder(rule_id: str) -> Optional[str]:
     if rule_id in _FIM_RULES:
         return _RESPONDER_FIM
     if rule_id in _NETWORK_RULES:
         return _RESPONDER_NETWORK
     return None
-# ── Counters
+
+
+# ── Counters ──────────────────────────────────────────────────────────────────
 def _fresh_counters() -> dict:
     return {
         "total":          0,
@@ -111,12 +126,15 @@ def _fresh_counters() -> dict:
         "hive_cases":     0,
         "hive_skipped":   0,
         "hive_resp_ok":   0,
-        "hive_resp_skip": 0,   
+        "hive_resp_skip": 0,   # FIX-1: new counter for "skipped" (no srcip)
         "hive_resp_err":  0,
         "email_sent":     0,
         "email_err":      0,
+    "push_dropped":   0,
     }
-# ── Brute-force tracker 
+
+
+# ── Brute-force tracker ───────────────────────────────────────────────────────
 class _BruteForceTracker:
     def __init__(self) -> None:
         self._buckets: dict[str, deque[float]] = {}
@@ -148,6 +166,8 @@ class _BruteForceTracker:
 
     def reset(self) -> None:
         self._buckets.clear()
+
+
 def _escalate_brute_force(alert: dict, tracker: _BruteForceTracker) -> dict:
     rule_id = alert.get("rule_id", "")
     srcip   = alert.get("srcip", "")
@@ -180,7 +200,9 @@ def _escalate_brute_force(alert: dict, tracker: _BruteForceTracker) -> dict:
             f"in {BRUTE_FORCE_WINDOW}s"
         )
     return alert
-# ── Alert dedup 
+
+
+# ── Alert dedup ───────────────────────────────────────────────────────────────
 class _AlertDedup:
     def __init__(self) -> None:
         self._seen: dict[str, float] = {}
@@ -206,7 +228,9 @@ class _AlertDedup:
 
     def reset(self) -> None:
         self._seen.clear()
-# ── Day-boundary tracker 
+
+
+# ── Day-boundary tracker ──────────────────────────────────────────────────────
 class _DayBoundary:
     def __init__(self, tz_name: str) -> None:
         try:
@@ -260,7 +284,9 @@ class _DayBoundary:
             tzinfo=self._tz,
         )
         return max(0.0, (tomorrow - now).total_seconds())
-# ── Argument parsing
+
+
+# ── Argument parsing ──────────────────────────────────────────────────────────
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Wazuh SOC → TheHive + Gmail Unified Engine",
@@ -293,7 +319,9 @@ def _parse_args() -> argparse.Namespace:
                    help="Show full per-alert detail + case/responder/email confirmations "
                         "(default: compact one-line per alert, full detail still logged)")
     return p.parse_args()
-# ── Logging setup 
+
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
 def _setup_logging(debug: bool) -> None:
     log_path = Path(LOG_FILE).parent / "thehive_interceptor.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -313,12 +341,18 @@ def _setup_logging(debug: bool) -> None:
     ch.setLevel(logging.WARNING)
     ch.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     root.addHandler(ch)
-# ── Signal handling 
+
+
+# ── Signal handling ───────────────────────────────────────────────────────────
 _shutdown_requested: bool = False
 
 def _handle_signal(signum, frame) -> None:
     global _shutdown_requested
     _shutdown_requested = True
+
+
+# ── Cortex responder helper ───────────────────────────────────────────────────
+
 def _run_responder_and_log(
     client,
     case_id:        str,
@@ -335,6 +369,7 @@ def _run_responder_and_log(
             poll_result    = False,
         )
         status = result.get("status", "failed")
+
         if status == "triggered":
             ctrs["hive_resp_ok"] += 1
             if _VERBOSE:
@@ -362,6 +397,7 @@ def _run_responder_and_log(
                 f"Responder skipped (expected)  case={case_id}"
                 f"  reason={result.get('error','')}  label={label}"
             )
+
         else:
             ctrs["hive_resp_err"] += 1
             if _VERBOSE:
@@ -375,10 +411,13 @@ def _run_responder_and_log(
                 f"Responder failed  case={case_id}"
                 f"  status={status}  error={result.get('error','')}  label={label}"
             )
+
     except Exception as exc:
         ctrs["hive_resp_err"] += 1
         logging.error(f"run_responder raised unexpectedly case={case_id}: {exc}")
-# ── Gmail send helper
+
+
+# ── Gmail send helper ─────────────────────────────────────────────────────────
 def _send_email_and_log(
     gmail: GmailAlerter,
     alert: dict,
@@ -398,7 +437,9 @@ def _send_email_and_log(
         ctrs["email_err"] += 1
         logging.error(f"GmailAlerter.send raised unexpectedly: {exc}")
         print(f"  {C.RED}[EMAIL ERROR]{C.RESET} {exc}")
-# ── Main loop 
+
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
 def main() -> None:
     args = _parse_args()
     _setup_logging(args.debug)
@@ -407,7 +448,9 @@ def main() -> None:
     _VERBOSE = args.verbose
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT,  _handle_signal)
+
     if not _THEHIVE_KEY:
+        # FIX-2: Do not print real credentials in the error hint.
         print(
             f"\n  {C.RED}[FATAL]{C.RESET} THEHIVE_KEY not set. Export credentials first:\n"
             f"\n"
@@ -431,6 +474,7 @@ def main() -> None:
     dry = args.dry_run
     if dry:
         print(f"  {C.YELLOW}[DRY-RUN MODE]{C.RESET} No TheHive or Gmail API calls will be made.\n")
+
     try:
         client = TheHiveClient(
             url        = THEHIVE_URL,
@@ -482,10 +526,21 @@ def main() -> None:
                 f"  {C.ORANGE}[WARN]{C.RESET} {label} file not found: "
                 f"{C.CYAN}{path}{C.RESET} — waiting for wazuh-manager…"
             )
+
     tail_mode   = not args.replay
+    if args.replay:
+        print(
+            f"  {C.ORANGE}[WARN]{C.RESET} --replay has no effect with the "
+            f"push-socket architecture (PushListener has no file to replay "
+            f"from). Use intercept.py --replay against alerts.json/archives.json "
+            f"directly if you need to backtest historical data.\n"
+        )
+        logging.warning("--replay flag passed but PushListener ignores it — no-op")
     min_sev_val = SEVERITY_ORDER.get(MIN_SEVERITY, 2)
 
-    tailer     = MultiTailer(tail_mode=tail_mode)
+    from push_listener import PushListener
+    tailer     = PushListener()
+    tailer.start()
     correlator = Correlator()
     day        = _DayBoundary(DAY_TIMEZONE)
     dedup      = _AlertDedup()
@@ -501,8 +556,11 @@ def main() -> None:
         f"gmail={'on' if _GMAIL_ENABLED else 'off'}  "
         f"dry={dry}"
     )
+
     try:
         while not _shutdown_requested:
+
+            # ── Day-boundary rollover ─────────────────────────────────────
             if day.rolled_over():
                 yesterday = day.active_day - timedelta(days=1)
                 show_daily_summary(yesterday, day.session_start, ctrs, DAY_TIMEZONE)
@@ -529,48 +587,70 @@ def main() -> None:
                     f"── New day: {day.active_day}  [{DAY_TIMEZONE}] ──"
                     f"{C.RESET}\n"
                 )
+
             got_events = False
+
             for source, line in tailer.read_new_lines():
                 if len(line) > 512_000:
                     logging.warning(
                         f"Oversized line ({len(line)}B) from {source} — skipped"
                     )
                     continue
+
                 try:
                     raw = json.loads(line)
                 except json.JSONDecodeError:
                     logging.debug(f"Bad JSON from {source}: {line[:120]}")
                     continue
+
                 if not isinstance(raw, dict):
                     continue
+
                 alert = build_alert(raw, source)
                 if alert is None:
                     continue
+
                 got_events = True
                 rule_id  = alert["rule_id"]
                 agent_id = alert.get("agent_id", "000")
+
+                # ── Date filter ───────────────────────────────────────────
                 if not day.alert_is_today(alert["timestamp"]):
                     ctrs["skipped"] += 1
                     continue
+
+                # ── Brute-force escalation ────────────────────────────────
                 alert = _escalate_brute_force(alert, bf_tracker)
+
+                # ── Severity gate ─────────────────────────────────────────
                 if SEVERITY_ORDER.get(alert["severity"], 0) < min_sev_val:
                     ctrs["skipped"] += 1
                     continue
+
+                # ── Dedup ─────────────────────────────────────────────────
                 if dedup.is_duplicate(alert):
                     ctrs["skipped"] += 1
                     continue
+
                 sev = alert["severity"]
                 ctrs["total"] += 1
                 ctrs[sev]      = ctrs.get(sev, 0) + 1
                 ctrs["src_alerts" if source == "alerts" else "src_archives"] += 1
+
+                # ── Terminal display ──────────────────────────────────────
                 if _VERBOSE:
                     show(alert)
                 else:
                     show_compact(alert)
+
+                # ── TheHive: create case ──────────────────────────────────
                 case_id = manager.process_alert(alert)
+
                 if isinstance(case_id, str) and case_id:
                     ctrs["hive_cases"] += 1
+
                     if not dry:
+                        # ── Step 1: post observables + trigger analyzers ───
                         obs_result = attach_observables(
                             client,
                             case_id,
@@ -586,6 +666,13 @@ def main() -> None:
                             f"skipped={obs_result['skipped']}  "
                             f"failed={obs_result['failed']}"
                         )
+
+                        # FIX-4: Removed the 5s sleep that waited for analyzers
+                        # before firing responders.  Analyzers run independently
+                        # in Cortex; the responder goes directly to Wazuh API
+                        # and doesn't depend on analyzer results at all.
+
+                        # ── Step 2: trigger Wazuh active response ──────────
                         chosen_responder = _get_responder(rule_id)
                         if chosen_responder:
                             _run_responder_and_log(
@@ -595,10 +682,15 @@ def main() -> None:
                                 label          = f"rule:{rule_id}",
                                 responder_name = chosen_responder,
                             )
+
                 elif case_id is False:
                     ctrs["hive_skipped"] += 1
+
+                # ── Gmail alert ───────────────────────────────────────────
                 if gmail and not dry:
                     _send_email_and_log(gmail, alert, ctrs, label="alert")
+
+                # ── Correlation engine ────────────────────────────────────
                 if rule_id != "ARCHIVE":
                     correlator.add(rule_id, agent_id)
                     corr = correlator.check()
@@ -608,10 +700,16 @@ def main() -> None:
                             f"CORRELATION {corr['name']}  "
                             f"sev={corr['severity']}  agent={agent_id}"
                         )
+
                         corr_id = manager.process_correlation(corr, agent_id)
+
                         if isinstance(corr_id, str) and corr_id:
                             ctrs["hive_cases"] += 1
                             if not dry:
+                                # Correlation cases always use the network responder.
+                                # If no srcip is available, run_responder() returns
+                                # status="skipped" which _run_responder_and_log
+                                # now handles correctly (FIX-1).
                                 _run_responder_and_log(
                                     client, corr_id, ctrs,
                                     label          = "correlation",
@@ -638,21 +736,30 @@ def main() -> None:
                                     _send_email_and_log(
                                         gmail, corr_alert, ctrs, label="correlation"
                                     )
+
                         elif corr_id is False:
                             ctrs["hive_skipped"] += 1
+
                 logging.info(
                     f"ALERT  src={source}  rule={rule_id}  sev={sev}"
                     f"  lvl={alert['level']}  agent={agent_id}"
                     f"  ip={alert.get('srcip','')}"
                     f"  desc={alert['description'][:80]}"
                 )
+
+            # ── Periodic maintenance ──────────────────────────────────────
             cycle += 1
+
+
             if cycle % 100 == 0:
                 dedup.cleanup()
                 bf_tracker.cleanup()
                 manager.cleanup()
                 if gmail:
                     gmail.cleanup()
+                ctrs["push_dropped"] = tailer.dropped_count
+
+
             if cycle % 300 == 0:
                 show_stats(day.active_day, ctrs, day.seconds_until_midnight())
                 print(
@@ -664,9 +771,13 @@ def main() -> None:
                     f"  responder_err={ctrs['hive_resp_err']}"
                     f"  email_sent={ctrs['email_sent']}"
                     f"  email_err={ctrs['email_err']}"
+                    f"  push_dropped={ctrs.get('push_dropped',0)}"
                 )
+
+
             if not got_events:
                 time.sleep(POLL_INTERVAL)
+
     finally:
         show_shutdown(day.active_day, day.session_start, ctrs, DAY_TIMEZONE)
         logging.info(
@@ -682,5 +793,7 @@ def main() -> None:
             f"  email_sent={ctrs['email_sent']}"
             f"  email_err={ctrs['email_err']}"
         )
+
+
 if __name__ == "__main__":
     main()
