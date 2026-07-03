@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from __future__ import annotations   # FIX A: enables X | Y union syntax on Python 3.9+
+from __future__ import annotations   
 import json
 import os
 import signal
