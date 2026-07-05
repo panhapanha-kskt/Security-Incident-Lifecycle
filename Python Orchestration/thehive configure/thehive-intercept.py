@@ -454,10 +454,10 @@ def main() -> None:
         print(
             f"\n  {C.RED}[FATAL]{C.RESET} THEHIVE_KEY not set. Export credentials first:\n"
             f"\n"
-            f"  export THEHIVE_KEY=\"SSZNE7qtAl6iBJNhls4Pvvt/iDuu7e+Y\"\n"
-            f"  export WAZUH_API_PASS=\"WazuhSOC2024!\"\n"
+            f"  export THEHIVE_KEY=\"your-thehive-api-key"\n"
+            f"  export WAZUH_API_PASS=\"your-wazuh-api-key\"\n"
             f"  export GMAIL_USER=\"sop98886@gmail.com\"\n"
-            f"  export GMAIL_PASS=\"ctjh sfoc unju esss\"\n"
+            f"  export GMAIL_PASS=\"your-gmail-pass\"\n"
             f"  export ALERT_TO=\"tithsopanha0@gmail.com\"\n",
             file=sys.stderr,
         )
