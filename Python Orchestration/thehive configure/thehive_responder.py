@@ -12,16 +12,16 @@ _WAZUH_MANAGER: str = os.environ.get("WAZUH_API_URL",  "https://192.168.200.129:
 _WAZUH_USER:    str = os.environ.get("WAZUH_API_USER", "wazuh-wui")
 _WAZUH_PASS:    str = os.environ.get("WAZUH_API_PASS", "")
 _CORTEX_URL: str = os.environ.get("CORTEX_URL", "https://172.24.80.95:9443")
-_CORTEX_KEY: str = os.environ.get("CORTEX_KEY", "your-cortex-key")
+_CORTEX_KEY: str = os.environ.get("CORTEX_KEY", "cortex-api-key")
 RESPONDER_NETWORK: str = "Wazuh_1_0"
 RESPONDER_FIM:     str = "WazuhFIM_1_0"
 _CORTEX_UUID_MAP: dict[str, list[tuple[str, str]]] = {
     RESPONDER_NETWORK: [
-        ("Wazuh_1_0_1_0", "your-responder-id"),
-        ("Wazuh_1_0",     "your-responder-id"),
+        ("Wazuh_1_0_1_0", "your-wazuh-id"),
+        ("Wazuh_1_0",     "your-wazuh-id"),
     ],
     RESPONDER_FIM: [
-        ("WazuhFIM_1_0_1_0", "your-responder-id"),
+        ("WazuhFIM_1_0_1_0", "your-wazuh-id"),
     ],
 }
 def _trigger_responder_cortex_direct(case_id: str, responder_name: str) -> dict:
@@ -311,6 +311,7 @@ def _trigger_via_wazuh_direct(client, case_id, responder_name) -> dict:
     )
     if not _is_usable_ip(agent_ip):
         agent_ip = ""
+
     command = ""
     arguments: list = []
     ip_used = ""
@@ -319,7 +320,7 @@ def _trigger_via_wazuh_direct(client, case_id, responder_name) -> dict:
         file_path = _scrape_filepath_from_description(description)
         arguments = [file_path] if file_path else []
     elif responder_name in (RESPONDER_NETWORK, f"{RESPONDER_NETWORK}_1_0"):
-        command = "firewall-drop"
+        command = "!custom-block-ip"
         if _is_usable_ip(srcip):
             ip_used = srcip
             arguments = [srcip]
@@ -347,6 +348,7 @@ def _trigger_via_wazuh_direct(client, case_id, responder_name) -> dict:
     else:
         summary["error"] = f"Wazuh AR returned False  case={case_id}"
         logger.error(summary["error"])
+
     return summary
 def run_responder(
     client,
@@ -363,8 +365,38 @@ def run_responder(
         "ip_used":    None,
         "error":      None,
     }
+
     logger.info(f"run_responder  case={case_id}  responder={responder_name}")
-    result = _trigger_responder_via_thehive(client, case_id, responder_name)
+    if not _WAZUH_PASS:
+        logger.warning(
+            f"WAZUH_API_PASS not set — falling back to TheHive/Cortex route "
+            f"(unverified) for case={case_id}"
+        )
+        result = _trigger_responder_via_thehive(client, case_id, responder_name)
+        summary["status"]    = result["status"]
+        summary["action_id"] = result["action_id"]
+        summary["error"]     = result.get("error")
+        return summary
+
+    fallback = _trigger_via_wazuh_direct(client, case_id, responder_name)
+    summary["status"]    = fallback["status"]
+    summary["action_id"] = fallback.get("action_id")
+    summary["ip_used"]   = fallback.get("ip_used")
+    summary["error"]     = fallback.get("error")
+
+    if summary["status"] != "triggered":
+        logger.warning(
+            f"Wazuh-direct trigger failed  case={case_id}  "
+            f"error={summary['error']}  — trying TheHive/Cortex route as last resort"
+        )
+        result = _trigger_responder_via_thehive(client, case_id, responder_name)
+        if result["status"] == "triggered":
+            summary["status"]    = "triggered"
+            summary["action_id"] = result["action_id"]
+            summary["error"]     = None
+
+    return summary
+
     if result["status"] == "triggered":
         summary["status"]    = "triggered"
         summary["action_id"] = result["action_id"]
