@@ -6,7 +6,8 @@ incident cases in TheHive, triggers automated response actions through Cortex,
 syncs indicators to MISP, and emails analysts — all with minimal manual
 intervention.
 
-> **Team:** Blue Team Operations Center
+> **Team:** Blue Team Operations Center 
+
 > **Stack:** Wazuh · TheHive · Cortex · MISP · Python · Docker
 
 ---
