@@ -295,4 +295,4 @@ cd thehive-configure/MISP
 
 ## Video 📺
 
-https://drive.google.com/file/d/1QgBoHXI4n_66M-m2b80HNFpVm90nFnmI/view
+[https://drive.google.com/file/d/1QgBoHXI4n_66M-m2b80HNFpVm90nFnmI/view](https://drive.google.com/file/d/1Ebi4WiNt23jXchxehC9v1sV3YHfIGBl1/view?usp=sharing)
