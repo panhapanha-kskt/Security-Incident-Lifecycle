@@ -2,7 +2,7 @@
 from __future__ import annotations
 import logging
 import sys
-from pathlib import Pa
+from pathlib import Path
 from typing import Optional
 logger = logging.getLogger(__name__)
 _MISP_DIR = Path(__file__).resolve().parent / "MISP"
