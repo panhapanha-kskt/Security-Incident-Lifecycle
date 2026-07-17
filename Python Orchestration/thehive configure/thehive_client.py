@@ -2,6 +2,7 @@
 import urllib3
 import requests
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 class TheHiveClient:
     def __init__(
         self,
@@ -32,6 +33,7 @@ class TheHiveClient:
             return r.status_code == 200
         except Exception:
             return False
+
     def create_case(self, case_data: dict):
         r = self.session.post(
             f"{self.url}/api/v1/case",
