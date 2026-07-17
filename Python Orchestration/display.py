@@ -49,8 +49,7 @@ class C:
             "LOW":      _c("\033[48;5;24m\033[38;5;255m"),
             "INFO":     _c("\033[48;5;237m\033[38;5;244m"),
         }.get(level, _c("\033[7m"))
-
-# ── Security helpers ─────────────────────────────────────────
+    
 _ANSI_RE   = re.compile(r'\x1B[@-_][0-?]*[ -/]*[@-~]')
 _CTRL_RE   = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 _INJECT_RE = re.compile(r'[\r\n]')
@@ -60,7 +59,6 @@ def sanitize(text: str, max_len: int = 1000) -> str:
     s = _CTRL_RE.sub('', s)
     s = _INJECT_RE.sub(' ', s)
     return s[:max_len]
-
 
 def format_timestamp(iso_str: str) -> str:
     if not iso_str:
@@ -79,6 +77,7 @@ _COMPACT_SEV_LABEL = {
     "LOW":      "LOW ",
     "INFO":     "INFO",
 }
+
 def show_compact(alert: dict) -> None:
     sev        = alert.get("severity", "INFO")
     rule_id    = sanitize(alert.get("rule_id", "—"), 20)
@@ -105,6 +104,7 @@ def _source_tag(source: str) -> str:
     if source == "archives":
         return f"{C.TEAL}[ARCHIVES]{C.RESET}"
     return f"{C.GREEN}[ALERTS  ]{C.RESET}"
+
 _BADGES = {
     "CRITICAL": "CRITICAL",
     "HIGH":     " HIGH   ",
@@ -112,16 +112,15 @@ _BADGES = {
     "LOW":      "  LOW   ",
     "INFO":     "  INFO  ",
 }
+
 def _badge(sev: str) -> str:
     label = _BADGES.get(sev, " UNKNOWN")
     return f"{C.sev_bg(sev)} {label} {C.RESET}"
-
 
 _DIV_HEAVY  = f"{C.DGRAY}{'═' * 76}{C.RESET}"
 _DIV_LIGHT  = f"{C.DGRAY}{'─' * 76}{C.RESET}"
 _DIV_CRIT   = f"{C.RED}{'▓' * 76}{C.RESET}"
 _DIV_HIGH   = f"{C.ORANGE}{'▒' * 76}{C.RESET}"
-
 
 def _top_divider(sev: str) -> str:
     if sev == "CRITICAL":
@@ -129,10 +128,12 @@ def _top_divider(sev: str) -> str:
     if sev == "HIGH":
         return _DIV_HIGH
     return _DIV_HEAVY
+
 def _field(label: str, value: str, color: str = "") -> None:
     col = color or C.WHITE
     pad = f"{C.STEEL}{label:<14}{C.RESET}"
     print(f"  {pad}  {col}{value}{C.RESET}")
+
 def show(alert: dict) -> None:
     sev           = alert.get("severity", "INFO")
     rule_id       = sanitize(alert.get("rule_id", "—"), 20)
@@ -185,7 +186,6 @@ def show(alert: dict) -> None:
         f"{C.GRAY}ID: {C.CYAN}{rule_id:<12}{C.RESET}"
         f"  {C.GRAY}Level: {sev_color}{C.BOLD}{level}{C.RESET}"
     )
-
     _field("DESCRIPTION", desc, sev_color)
 
     if reason and reason != desc:
@@ -236,6 +236,7 @@ def show(alert: dict) -> None:
         _field("LOG", full_log, C.DIM)
 
     print(_DIV_LIGHT)
+
 def show_correlation(result: dict) -> None:
     sev  = result.get("severity", "HIGH")
     name = result.get("name", "UNKNOWN")
@@ -250,6 +251,7 @@ def show_correlation(result: dict) -> None:
     if desc:
         print(f"  {C.STEEL}{'DETAIL':<14}{C.RESET}  {C.YELLOW}{desc}{C.RESET}")
     print(f"{C.RED}{C.BOLD}{'▄' * 76}{C.RESET}\n")
+
 def show_stats(day, ctrs: dict, secs_left: float) -> None:
     hrs  = int(secs_left // 3600)
     mins = int((secs_left % 3600) // 60)
@@ -265,8 +267,8 @@ def show_stats(day, ctrs: dict, secs_left: float) -> None:
         f"  {C.GREEN}INFO:{ctrs['INFO']}{C.RESET}"
         f"  {C.GRAY}skip:{ctrs['skipped']}{C.RESET}"
     )
+
 def show_daily_summary(day, session_start, ctrs: dict, tz_name: str) -> None:
-    # datetime and ZoneInfo are imported at the top of this module
     tz       = ZoneInfo(tz_name)
     duration = str(datetime.now(tz) - session_start).split(".")[0]
 
@@ -301,11 +303,10 @@ def show_daily_summary(day, session_start, ctrs: dict, tz_name: str) -> None:
         )
 
     print(f"{C.BLUE}╚{'═' * 58}╝{C.RESET}\n")
+
 def show_shutdown(day, session_start, ctrs: dict, tz_name: str) -> None:
-    # datetime and ZoneInfo are imported at the top of this module
     tz       = ZoneInfo(tz_name)
     duration = str(datetime.now(tz) - session_start).split(".")[0]
-
     print(f"\n{C.ORANGE}{C.BOLD}╔{'═' * 42}╗")
     print(f"║{'  INTERCEPTOR SHUTDOWN SUMMARY':<42}║")
     print(f"╠{'═' * 42}╣{C.RESET}")
