@@ -68,18 +68,23 @@ _BRUTE_FORCE_RULES: frozenset[str] = frozenset({
     "5503", "5710", "5712", "5715", "5716", "5758",
     "100105", "100116", "100901", "100106",
 })
+
 _RESPONDER_RULES: frozenset[str] = _FIM_RULES | _BRUTE_FORCE_RULES
+
+
 def _is_valid_ip(value: str) -> bool:
     try:
         addr = ipaddress.ip_address(value.strip())
         return not (addr.is_loopback or addr.is_link_local or addr.is_unspecified)
     except ValueError:
         return False
+
 def _is_private_ip(value: str) -> bool:
     try:
         return ipaddress.ip_address(value.strip()).is_private
     except ValueError:
         return False
+
 def _extract_ips_from_text(text: str) -> list[str]:
     results: list[str] = []
     seen: set[str] = set()
@@ -89,6 +94,7 @@ def _extract_ips_from_text(text: str) -> list[str]:
             seen.add(ip)
             results.append(ip)
     return results
+
 def _extract_user_agents(text: str) -> list[str]:
     results: list[str] = []
     seen: set[str] = set()
@@ -98,6 +104,7 @@ def _extract_user_agents(text: str) -> list[str]:
             seen.add(ua.lower())
             results.append(ua)
     return results
+
 def _syscheck_context(alert: dict) -> str:
     sc = alert.get("syscheck") or {}
     lines: list[str] = []
@@ -125,6 +132,8 @@ def _syscheck_context(alert: dict) -> str:
         if fe:
             lines.append(f"Event: {fe}")
     return "\n".join(lines)
+
+
 class ObservableExtractor:
     @staticmethod
     def _sanitize(value: str, max_len: int = 512) -> str:
@@ -278,6 +287,8 @@ class ObservableExtractor:
                 add("hash", h, f"syscheck.{hash_key}", "\n".join(note_parts))
 
         return observables
+
+
 class TheHiveObservableManager:
     def __init__(
         self,
@@ -320,6 +331,7 @@ class TheHiveObservableManager:
             "responder_action": None,
             "errors":           [],
         }
+
         if not observables:
             logger.info(
                 f"No observables of allowed types {set(_ALLOWED_TYPES)}  "
@@ -331,23 +343,28 @@ class TheHiveObservableManager:
                 summary["responder_status"] = resp_result.get("status")
                 summary["responder_action"] = resp_result.get("action_id")
             return summary
+
         self._ensure_analyzer_cache()
         if not self._cortex_id:
             logger.warning(
                 "No Cortex server found via /api/connector/cortex/analyzer — "
                 "observables will be posted but analyzers will NOT be triggered"
             )
+
         logger.info(
             f"Posting {len(observables)} observable(s)  case={case_id}  "
             f"rule={rule_id}  category={category}  ioc={is_ioc}  fim={is_fim}"
         )
+
         for obs in observables:
             ioc_flag = self._decide_ioc(obs, is_ioc, is_fim)
             sighted  = self._decide_sighted(obs, is_brute, is_fim)
             tlp, pap = self._decide_tlp_pap(obs, ioc_flag)
             desc_txt = self._build_description(obs, alert, category, ioc_flag, sighted)
+
             payload = self._build_payload(obs, alert, category, ioc_flag, sighted, tlp, pap, desc_txt)
             result, obs_id = self._post_observable(case_id, payload)
+
             if result == "created":
                 summary["added"] += 1
                 if ioc_flag:
@@ -357,6 +374,7 @@ class TheHiveObservableManager:
                 if obs_id and self._cortex_id:
                     jobs = self._trigger_analyzers(obs_id, obs)
                     summary["analyzer_jobs"] += jobs
+
             elif result == "updated":
                 summary["added"] += 1
                 if obs["data_type"] == "hash":
@@ -367,9 +385,11 @@ class TheHiveObservableManager:
 
             elif result == "duplicate":
                 summary["skipped"] += 1
+
             else:
                 summary["failed"] += 1
                 summary["errors"].append(f"{obs['data_type']}:{obs['value'][:40]} → {result}")
+
         if rule_id in _RESPONDER_RULES:
             resp_result = self._trigger_responders(case_id, alert)
             summary["responder_status"] = resp_result.get("status")
@@ -387,6 +407,7 @@ class TheHiveObservableManager:
             f"responder={summary['responder_status']}"
         )
         return summary
+
     def _ensure_analyzer_cache(self) -> None:
         if self._analyzer_cache_loaded:
             return
@@ -505,7 +526,9 @@ class TheHiveObservableManager:
                     )
                     if attempt < self._max_retries:
                         time.sleep(self._retry_delay * (attempt + 1))
+
         return jobs_fired
+
     def _trigger_responders(self, case_id: str, alert: dict) -> dict:
         rule_id = str(alert.get("rule_id", ""))
 
@@ -518,21 +541,25 @@ class TheHiveObservableManager:
                 f"_trigger_responders: rule={rule_id} has no responder mapping — skipped"
             )
             return {"status": "skipped", "responder": None, "error": "no mapping for rule"}
+
         logger.info(
             f"_trigger_responders: case={case_id}  rule={rule_id}  "
             f"responder={responder_name}"
         )
+
         result = run_responder(
             client         = self._client,
             case_id        = case_id,
             responder_name = responder_name,
         )
+
         logger.info(
             f"_trigger_responders result: case={case_id}  "
             f"responder={responder_name}  status={result['status']}  "
             f"action_id={result.get('action_id')}  error={result.get('error')}"
         )
         return result
+
     def _decide_ioc(self, obs: dict, is_ioc: bool, is_fim: bool) -> bool:
         dtype = obs["data_type"]
         if dtype == "hash":
@@ -542,12 +569,14 @@ class TheHiveObservableManager:
         if is_fim or _is_private_ip(obs["value"]):
             return False
         return True
+
     def _decide_sighted(self, obs: dict, is_brute: bool, is_fim: bool) -> bool:
         if obs["data_type"] != "ip":
             return False
         if is_fim or is_brute or _is_private_ip(obs["value"]):
             return True
         return False
+
     def _decide_tlp_pap(self, obs: dict, ioc_flag: bool) -> tuple[int, int]:
         dtype   = obs["data_type"]
         is_priv = dtype == "ip" and _is_private_ip(obs["value"])
@@ -558,6 +587,7 @@ class TheHiveObservableManager:
         if is_priv:
             return TLP_GREEN, PAP_GREEN
         return TLP_AMBER, PAP_AMBER
+
     def _build_description(
         self, obs: dict, alert: dict, category: str, ioc_flag: bool, sighted: bool
     ) -> str:
@@ -573,6 +603,7 @@ class TheHiveObservableManager:
         full_log   = str(alert.get("full_log") or "")[:300]
         mitre      = ", ".join(alert.get("mitre", [])) or "N/A"
         fim_ctx    = _syscheck_context(alert) if alert.get("rule_id", "") in _FIM_RULES else ""
+
         lines = [
             "=== Wazuh SOC Auto-Observable ===",
             f"Type      : {obs['data_type']}",
@@ -607,6 +638,7 @@ class TheHiveObservableManager:
         if obs["data_type"] == "ip" and _is_private_ip(obs["value"]):
             lines += ["", "INTERNAL IP — running MISP only (VirusTotal/Shodan skipped)"]
         return "\n".join(lines)
+
     def _build_payload(
         self, obs: dict, alert: dict, category: str,
         ioc_flag: bool, sighted: bool, tlp: int, pap: int, description_text: str
@@ -614,6 +646,7 @@ class TheHiveObservableManager:
         rule_id    = str(alert.get("rule_id",    "?"))
         agent_name = str(alert.get("agent_name", "?"))
         severity   = str(alert.get("severity",   "INFO"))
+
         tags = [
             "wazuh",
             f"rule:{rule_id}",
@@ -631,6 +664,7 @@ class TheHiveObservableManager:
             tags.append("malware")
         if obs["data_type"] == "ip" and _is_private_ip(obs["value"]):
             tags.append("internal-ip")
+
         return {
             "dataType":         obs["data_type"],
             "data":             obs["value"],
@@ -643,6 +677,7 @@ class TheHiveObservableManager:
             "tags":             tags,
             "ignoreSimilarity": False,
         }
+
     def _post_observable(self, case_id: str, payload: dict) -> tuple[str, Optional[str]]:
         url = f"{self._client.url}/api/v1/case/{case_id}/observable"
         for attempt in range(self._max_retries + 1):
@@ -659,17 +694,20 @@ class TheHiveObservableManager:
                         f"type={payload['dataType']}  value={payload['data'][:40]}"
                     )
                     return "created", obs_id
+
                 if resp.status_code == 207:
                     obs_id = self._extract_id_from_207(resp)
                     if obs_id:
                         self._patch_observable(obs_id, payload)
                         return "updated", obs_id
                     return "duplicate", None
+
                 if resp.status_code == 400:
                     body_text = resp.text.lower()
                     if any(x in body_text for x in ("already", "duplicate", "exist")):
                         return "duplicate", None
                     return f"HTTP 400: {resp.text[:120]}", None
+
                 if resp.status_code >= 500 and attempt < self._max_retries:
                     logger.warning(
                         f"HTTP {resp.status_code} posting observable "
@@ -679,12 +717,15 @@ class TheHiveObservableManager:
                     continue
 
                 return f"HTTP {resp.status_code}: {resp.text[:120]}", None
+
             except Exception as exc:
                 if attempt < self._max_retries:
                     time.sleep(self._retry_delay * (attempt + 1))
                     continue
                 return f"Exception: {exc}", None
+
         return "max retries exceeded", None
+
     @staticmethod
     def _extract_id_from_207(resp) -> Optional[str]:
         try:
@@ -696,6 +737,7 @@ class TheHiveObservableManager:
         except Exception:
             pass
         return None
+
     def _patch_observable(self, obs_id: str, payload: dict) -> None:
         url = f"{self._client.url}/api/v1/observable/{obs_id}"
         patch_body = {
@@ -718,8 +760,9 @@ class TheHiveObservableManager:
                 )
         except Exception as exc:
             logger.warning(f"Observable PATCH exception  id={obs_id}  error={exc}")
-# ── Module-level singleton
+
 _manager_singleton: Optional[TheHiveObservableManager] = None
+
 def attach_observables(
     client,
     case_id:     str,
