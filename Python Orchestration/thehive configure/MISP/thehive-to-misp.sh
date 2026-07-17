@@ -1,17 +1,27 @@
 #!/bin/bash
 THEHIVE_URL="https://172.24.80.95:8443"
-THEHIVE_KEY="Bearer Your-TheHive-API-Key"
+THEHIVE_KEY="Bearer thehive-key"
 MISP_URL="https://172.24.80.95:9001"
-MISP_KEY="Your-MISP-API-Key"
+MISP_KEY="your-misp-key"
+
 echo "[*] Querying all cases from TheHive..."
 CASES_JSON=$(curl -k -XPOST -s \
      -H "Authorization: $THEHIVE_KEY" \
      -H "Content-Type: application/json" \
      "$THEHIVE_URL/api/v1/query" \
      -d '{"query": [{"_name": "listCase"}]}')
-
-if [ -z "$CASES_JSON" ] || [ "$CASES_JSON" == "[]" ]; then
-    echo "[-] No cases found or failed to authenticate with TheHive."
+if [ -z "$CASES_JSON" ]; then
+    echo "[-] No response from TheHive — check connectivity/auth to $THEHIVE_URL"
+    exit 1
+fi
+if [ "$CASES_JSON" == "[]" ]; then
+    echo "[·] TheHive reachable — 0 cases currently exist. Nothing to sync."
+    exit 0
+fi
+if ! echo "$CASES_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    echo "[-] Unexpected response from TheHive (not a JSON array):"
+    echo "$CASES_JSON" | head -c 300
+    echo ""
     exit 1
 fi
 TOTAL_CASES=$(echo "$CASES_JSON" | jq '. | length')
@@ -37,13 +47,16 @@ misp_event_exists_for_case() {
         | .[0].id // empty
     ' 2>/dev/null
 }
-for ((i=0; i<$TOTAL_CASES; i++)); do
+SYNC_FAILED=0
+for ((i=0; i<TOTAL_CASES; i++)); do
     CASE_ID=$(echo "$CASES_JSON" | jq -r ".[$i]._id")
     TITLE=$(echo "$CASES_JSON" | jq -r ".[$i].title")
     DESC=$(echo "$CASES_JSON" | jq -r ".[$i].description // \"No description provided\"")
     SEVERITY=$(echo "$CASES_JSON" | jq -r ".[$i].severity // 2")
+
     echo "--------------------------------------------------------"
     echo "[*] Checking Case ID: $CASE_ID — $TITLE"
+
     EXISTING_ID=$(misp_event_exists_for_case "$CASE_ID")
     if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
         echo "[·] Already synced — MISP Event ID $EXISTING_ID exists for this case. Skipping."
@@ -81,7 +94,9 @@ for ((i=0; i<$TOTAL_CASES; i++)); do
     else
         echo "[-] Failed to push to MISP API (HTTP $HTTP_CODE)"
         echo "[-] Error Details: $HTTP_BODY"
+        SYNC_FAILED=1
     fi
 done
 echo "--------------------------------------------------------"
 echo "[+] Sync completed (existing cases skipped, new cases created)."
+exit "$SYNC_FAILED"
