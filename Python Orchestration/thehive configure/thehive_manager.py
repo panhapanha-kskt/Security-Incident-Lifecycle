@@ -12,7 +12,9 @@ SEVERITY_MAP: dict[str, int] = {
     "HIGH":     3,
     "CRITICAL": 4,
 }
+
 DEDUP_SKIPPED = False
+
 class TheHiveCaseManager:
     def __init__(
         self,
@@ -29,12 +31,13 @@ class TheHiveCaseManager:
         self.verbose           = verbose
         self._last_sent: dict[str, float] = {}
         self._min_sev_int: int = SEVERITY_MAP.get(case_min_severity, 2)
+
         logger.info(
             f"TheHiveCaseManager ready  "
             f"min_sev={case_min_severity}  dedup={case_dedup_sec}s  "
             f"dry_run={dry_run}  verbose={verbose}"
         )
-    # ── public API 
+
     def process_alert(self, alert: dict) -> Union[str, bool, None]:
         severity = alert.get("severity", "LOW")
 
@@ -44,6 +47,7 @@ class TheHiveCaseManager:
                 f"rule={alert.get('rule_id','?')} sev={severity}"
             )
             return None
+
         rule_id = alert.get("rule_id", "?")
         srcip   = alert.get("srcip", "") or ""
         key     = f"{rule_id}|{srcip}"
@@ -56,10 +60,13 @@ class TheHiveCaseManager:
                 f"(cooldown {self.case_dedup_sec - (now - last):.0f}s left)"
             )
             return DEDUP_SKIPPED
+
         case_data = self._build_alert_case(alert, severity)
+
         if self.dry_run:
             print(f"[DRY-RUN] Would create case: {case_data['title']}")
             return None
+
         try:
             result = self.client.create_case(case_data)
             case_id: str = result.get("_id") or result.get("id") or ""
@@ -71,10 +78,12 @@ class TheHiveCaseManager:
                 f"sev={severity}  src={srcip}"
             )
             return case_id
+            
         except Exception as exc:
             print(f"[!] Failed creating case: {exc}")
             logger.error(f"TheHive create_case error: {exc}")
             return None
+
     def process_correlation(
         self, corr: dict, agent_id: str
     ) -> Union[str, bool, None]:
@@ -111,6 +120,7 @@ class TheHiveCaseManager:
             print(f"[!] Correlation case failed: {exc}")
             logger.error(f"TheHive correlation create_case error: {exc}")
             return None
+
     def cleanup(self) -> None:
         now    = time.monotonic()
         cutoff = now - self.case_dedup_sec
@@ -119,10 +129,11 @@ class TheHiveCaseManager:
         evicted = before - len(self._last_sent)
         if evicted:
             logger.debug(f"TheHiveCaseManager.cleanup: evicted {evicted} dedup entries")
+
     def reset(self) -> None:
         self._last_sent.clear()
         logger.debug("TheHiveCaseManager.reset: dedup store cleared")
-    # ── private helpers
+
     @staticmethod
     def _build_alert_case(alert: dict, severity: str) -> dict:
         rule_id   = alert.get("rule_id", "?")
@@ -137,12 +148,15 @@ class TheHiveCaseManager:
         mitre     = ", ".join(alert.get("mitre", [])) or "N/A"
         reason    = alert.get("reason", "") or desc
         full_log  = (alert.get("full_log") or "")[:700]
+
         if not agent_id or agent_id == "N/A":
             agent_id = "000"
+
         log_section = f"\n**Raw Log (truncated)**\n```\n{full_log}\n```" if full_log else ""
+
         wazuh_metadata = _json.dumps({
             "agent_id":  str(agent_id),
-            "agent_ip":  str(agent_ip) if agent_ip != "N/A" else "",   # FIX-7
+            "agent_ip":  str(agent_ip) if agent_ip != "N/A" else "",   
             "rule_id":   str(rule_id),
             "alert_id":  str(alert.get("alert_id", "")) or timestamp,
             "srcip":     str(srcip) if srcip != "N/A" else "",
@@ -181,6 +195,7 @@ class TheHiveCaseManager:
             ],
             "flag": severity == "CRITICAL"
         }
+
     @staticmethod
     def _build_correlation_case(corr: dict, agent_id: str, sev: str) -> dict:
         name = corr.get("name", "UNKNOWN_CORRELATION")
@@ -191,11 +206,12 @@ class TheHiveCaseManager:
 
         wazuh_metadata = _json.dumps({
             "agent_id": str(agent_id),
-            "agent_ip": "",  
+            "agent_ip": "",   
             "rule_id":  f"CORR:{name}",
             "alert_id": f"CORR:{name}",
             "srcip":    "",
         })
+
         return {
             "title": f"[CORRELATION] {name}",
             "description": (
