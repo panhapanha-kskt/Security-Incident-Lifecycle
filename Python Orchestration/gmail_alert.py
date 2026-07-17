@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-from __future__ import annotations   # FIX A: enables X | Y union syntax on Python 3.9+
+from __future__ import annotations  
+
 import json
 import os
 import signal
@@ -9,17 +10,20 @@ import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
+
 from classifier import SEVERITY_ORDER
 from config import ALERT_FILE, ARCHIVES_FILE, POLL_INTERVAL
 from display import C, show
 from intercept import MultiTailer, build_alert
-# ── SMTP settings 
+
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT   = 587
 SMTP_USER     = ""
 SMTP_PASSWORD = ""
 ALERT_EMAIL   = ""
+
 EMAIL_DEDUP_SEC = 300   
+
 class SMTPDeliveryError(Exception):
     """Raised by GmailAlerter.send() when SMTP fails (not on dedup/sev skip)."""
 
@@ -30,7 +34,7 @@ def _load_gmail_config() -> bool:
     SMTP_PASSWORD = os.environ.get("GMAIL_PASS", "").strip()
     ALERT_EMAIL   = os.environ.get("ALERT_TO",   "").strip()
     return bool(SMTP_USER and SMTP_PASSWORD and ALERT_EMAIL)
-# ── Severity colour map for HTML email 
+
 SEV_COLOR_CSS = {
     "CRITICAL": {"accent": "#E24B4A", "bg": "#791F1F", "dim": "rgba(226,75,74,.12)"},
     "HIGH":     {"accent": "#EF9F27", "bg": "#633806", "dim": "rgba(239,159,39,.12)"},
@@ -38,7 +42,7 @@ SEV_COLOR_CSS = {
     "LOW":      {"accent": "#639922", "bg": "#27500A", "dim": "rgba(99,153,34,.12)"},
     "INFO":     {"accent": "#888780", "bg": "#444441", "dim": "rgba(136,135,128,.12)"},
 }
-# ── HTML email builder 
+
 def build_html_email(alert: dict) -> str:
     sev     = alert.get("severity", "INFO")
     colors  = SEV_COLOR_CSS.get(sev, SEV_COLOR_CSS["INFO"])
@@ -55,6 +59,7 @@ def build_html_email(alert: dict) -> str:
     reason   = alert.get("reason",   "—") or "—"
     mitre    = alert.get("mitre", [])
     full_log = (alert.get("full_log") or "")[:700]
+
     ts_raw = alert.get("timestamp", "")
     try:
         ts = time.strftime(
@@ -63,7 +68,9 @@ def build_html_email(alert: dict) -> str:
         )
     except Exception:
         ts = ts_raw
+
     now_str = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
+
     def kv(label: str, value: str, color: Optional[str] = None) -> str:
         vc = f"color:{color};" if color else "color:#cccccc;"
         return (
@@ -75,6 +82,7 @@ def build_html_email(alert: dict) -> str:
             f'{vc}font-family:Courier New,monospace;word-break:break-all;">{value}</td>'
             f"</tr>"
         )
+
     kv_rows = "".join([
         kv("Timestamp",  ts),
         kv("Rule ID",    rule_id, accent),
@@ -86,6 +94,7 @@ def build_html_email(alert: dict) -> str:
         kv("Location",   location),
         kv("Log Source", source),
     ])
+
     mitre_html = " ".join(
         f'<a href="https://attack.mitre.org/techniques/{m.replace(".","/")}" '
         f'style="display:inline-block;background:rgba(55,138,221,.15);border:1px solid rgba(55,138,221,.3);'
@@ -209,9 +218,9 @@ def build_html_email(alert: dict) -> str:
 </body></html>"""
 
 
-# ── Gmail sender
 class GmailAlerter:
     EMAIL_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM"}
+
     def __init__(self, dedup_sec: int = EMAIL_DEDUP_SEC, verbose: bool = False) -> None:
         self._dedup_sec  = dedup_sec
         self. _verbose     = verbose
@@ -222,25 +231,31 @@ class GmailAlerter:
                 f"  {C.ORANGE}[EMAIL]{C.RESET} GMAIL_USER / GMAIL_PASS / ALERT_TO not set "
                 f"— email alerting disabled."
             )
+
     def send(self, alert: dict) -> bool:
         if not self._enabled:
             return False
+
         sev = alert.get("severity", "INFO")
         if sev not in self.EMAIL_SEVERITIES:
             return False
+
         rule_id = alert.get("rule_id", "?")
         srcip   = alert.get("srcip", "") or "N/A"
         key     = f"{rule_id}|{srcip}"
+
         now  = time.time()
         last = self._last_sent.get(key)
         if last is not None and (now - last) < self._dedup_sec:
-            return False  
+            return False   
+
         desc    = alert.get("description", "")
         icon    = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🔵"}.get(sev, "⚪")
         subject = (
             f"[SOC {sev}] {icon} Rule {rule_id} — "
             f"{desc[:55]}{'...' if len(desc) > 55 else ''}"
         )
+
         html_body  = build_html_email(alert)
         plain_body = (
             f"WAZUH SOC DEFENSE PLATFORM — SECURITY ALERT\n"
@@ -257,6 +272,7 @@ class GmailAlerter:
             f"Team: Kosal Karuna · Cho Davon · Tith Sopanha\n"
             f"FOR OFFICIAL SOC USE ONLY"
         )
+
         try:
             msg = MIMEMultipart("alternative")
             msg["From"]    = SMTP_USER
@@ -264,23 +280,29 @@ class GmailAlerter:
             msg["Subject"] = subject
             msg.attach(MIMEText(plain_body, "plain"))
             msg.attach(MIMEText(html_body,  "html"))
+
             with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as s:
                 s.ehlo()
                 s.starttls()
                 s.login(SMTP_USER, SMTP_PASSWORD)
                 s.send_message(msg)
+
             self._last_sent[key] = now
             if self._verbose:
                 print(f"  {C.GREEN}[EMAIL SENT]{C.RESET} {subject[:80]}")
             return True
+
         except Exception as exc:
             raise SMTPDeliveryError(str(exc)) from exc
+
     def cleanup(self, now: Optional[float] = None) -> None:
         t      = now if now is not None else time.time()
         cutoff = t - self._dedup_sec
         self._last_sent = {k: v for k, v in self._last_sent.items() if v > cutoff}
+
     def reset(self) -> None:
         self._last_sent.clear()
+
 def main() -> None:
     if not _load_gmail_config():
         print(
@@ -289,18 +311,24 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
     print(f"\n{C.CYAN}{C.BOLD}{'=' * 60}{C.RESET}")
     print(f"{C.CYAN}{C.BOLD}  GMAIL ALERT STANDALONE TEST MODE{C.RESET}")
     print(f"{C.CYAN}{C.BOLD}  Sending to: {ALERT_EMAIL}{C.RESET}")
     print(f"{C.CYAN}{C.BOLD}{'=' * 60}{C.RESET}\n")
+
     tailer  = MultiTailer(tail_mode=True)
     alerter = GmailAlerter()
+
     shutdown = False
+
     def handle_sig(sig: int, frame: object) -> None:
         nonlocal shutdown
         shutdown = True
+
     signal.signal(signal.SIGTERM, handle_sig)
     signal.signal(signal.SIGINT,  handle_sig)
+
     while not shutdown:
         got_events = False
         for source, line in tailer.read_new_lines():
@@ -310,18 +338,23 @@ def main() -> None:
                 continue
             if not isinstance(raw, dict):
                 continue
+
             alert = build_alert(raw, source)
             if alert is None:
                 continue
+
             show(alert)
             try:
                 alerter.send(alert)
             except SMTPDeliveryError as exc:
                 print(f"  {C.RED}[EMAIL FAILED]{C.RESET} {exc}")
             got_events = True
+
         if not got_events:
             time.sleep(POLL_INTERVAL)
+
     print(f"\n{C.ORANGE}Shutting down Gmail Alert standalone monitor.{C.RESET}")
     sys.exit(0)
+
 if __name__ == "__main__":
     main()
