@@ -2,7 +2,6 @@ import time
 from typing import Optional
 from config import CORRELATION_WINDOW
 
-
 class Correlator:
     SIGNATURES: list[dict] = [
         {
@@ -45,7 +44,7 @@ class Correlator:
     def add(self, rule_id: str, agent_id: str) -> None:
         now = time.monotonic()
         self._history.append((now, agent_id, rule_id))
-        self._evict(now)                  # rebuilds _active as a side-effect
+        self._evict(now)                  
         self._active.add((agent_id, rule_id))
 
     def check(self) -> Optional[dict]:
@@ -61,7 +60,7 @@ class Correlator:
             name = sig["name"]
             for ag_id, rules in agent_rules.items():
                 if (name, ag_id) in self._fired:
-                    continue                  # already fired for this agent
+                    continue                  
                 if sig["conditions"].issubset(rules):
                     self._fired[(name, ag_id)] = now
                     return {
@@ -72,13 +71,11 @@ class Correlator:
         return None
 
     def reset(self) -> None:
-        """Clear all state — call on day-boundary rollover."""
         self._history.clear()
         self._active.clear()
         self._fired.clear()
-    # ── private ───────────────────────────────────────────────────────────
+
     def _evict(self, now: float) -> None:
         cutoff        = now - CORRELATION_WINDOW
         self._history = [(t, a, r) for t, a, r in self._history if t > cutoff]
-        # Rebuild from history — intentionally discards expired rules
         self._active  = {(a, r) for (_, a, r) in self._history}
