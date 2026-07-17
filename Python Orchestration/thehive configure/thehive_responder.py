@@ -7,28 +7,21 @@ import re
 import time
 from typing import Optional
 import requests as _requests
-
 logger = logging.getLogger(__name__)
-
 _WAZUH_MANAGER: str = os.environ.get("WAZUH_API_URL",  "https://192.168.200.129:55000")
 _WAZUH_USER:    str = os.environ.get("WAZUH_API_USER", "wazuh-wui")
 _WAZUH_PASS:    str = os.environ.get("WAZUH_API_PASS", "")
 _CORTEX_URL: str = os.environ.get("CORTEX_URL", "https://172.24.80.95:9443")
-_CORTEX_KEY: str = os.environ.get("CORTEX_KEY", "your-cortex-api")
-_INDEXER_URL:  str = os.environ.get("WAZUH_INDEXER_URL", "https://192.168.200.129:9200")
-_INDEXER_USER: str = os.environ.get("WAZUH_INDEXER_USER", "admin")
-_INDEXER_PASS: str = os.environ.get("WAZUH_INDEXER_PASS", "")
-_INDEXER_INDEX_PATTERN: str = os.environ.get("WAZUH_INDEXER_INDEX", "wazuh-alerts-*")
-
+_CORTEX_KEY: str = os.environ.get("CORTEX_KEY", "your-cortex-key")
 RESPONDER_NETWORK: str = "Wazuh_1_0"
 RESPONDER_FIM:     str = "WazuhFIM_1_0"
 _CORTEX_UUID_MAP: dict[str, list[tuple[str, str]]] = {
     RESPONDER_NETWORK: [
-        ("Wazuh_1_0_1_0", "your-wazuh-id"),
-        ("Wazuh_1_0",     "your-wazuh-id"),
+        ("Wazuh_1_0_1_0", "wazuh-key"),
+        ("Wazuh_1_0",     "wazuh-key"),
     ],
     RESPONDER_FIM: [
-        ("WazuhFIM_1_0_1_0", "your-wazuh-id"),
+        ("WazuhFIM_1_0_1_0", "wazuh-key"),
     ],
 }
 def _trigger_responder_cortex_direct(case_id: str, responder_name: str) -> dict:
@@ -39,6 +32,7 @@ def _trigger_responder_cortex_direct(case_id: str, responder_name: str) -> dict:
             "action_id": None,
             "error":     f"No Cortex UUID configured for '{responder_name}'",
         }
+
     headers = {
         "Authorization": f"Bearer {_CORTEX_KEY}",
         "Content-Type":  "application/json",
@@ -93,6 +87,7 @@ def _trigger_responder_cortex_direct(case_id: str, responder_name: str) -> dict:
         "action_id": None,
         "error":     f"All Cortex direct attempts failed for '{responder_name}'",
     }
+
 def _trigger_responder_via_thehive(client, case_id: str, responder_name: str) -> dict:
     variants = _CORTEX_UUID_MAP.get(responder_name)
     if not variants:
@@ -134,6 +129,7 @@ def _trigger_responder_via_thehive(client, case_id: str, responder_name: str) ->
         "action_id": None,
         "error":     f"All TheHive-routed attempts failed for '{responder_name}'",
     }
+
 def _extract_from_tags(tags: list, prefix: str) -> str:
     if not tags:
         return ""
@@ -207,69 +203,6 @@ def _scrape_filepath_from_description(description: str) -> str:
     return ""
 def _is_usable_ip(ip: str) -> bool:
     return bool(ip) and ip.upper() not in ("N/A", "NONE", "")
-def _poll_ar_execution_confirmed(
-    agent_id:   str,
-    match_term: str,
-    command_name: str,
-    timeout:    float = 60.0,
-    interval:   float = 3.0,
-) -> tuple[bool, str]:
-    if not _INDEXER_PASS:
-        logger.warning(
-            "WAZUH_INDEXER_PASS not set — cannot confirm actual AR execution. "
-            "Falling back to dispatch-only status (manager accepted the "
-            "request, but on-agent success is UNVERIFIED)."
-        )
-        return True, "unverified (no indexer credentials configured)"
-    deadline = time.time() + timeout
-    query = {
-        "query": {
-            "bool": {
-                "must": [
-                    {"match_phrase": {"agent.id": agent_id}},
-                    {"match_phrase": {"full_log": "SUCCESS"}},
-                    {"match_phrase": {"full_log": match_term}},
-                    {"match_phrase": {"full_log": command_name}},
-                ],
-                "filter": [
-                    {"range": {"@timestamp": {"gte": "now-5m"}}}
-                ],
-            }
-        },
-        "sort": [{"@timestamp": {"order": "desc"}}],
-        "size": 1,
-    }
-    last_error = ""
-    while time.time() < deadline:
-        try:
-            resp = _requests.post(
-                f"{_INDEXER_URL}/{_INDEXER_INDEX_PATTERN}/_search",
-                json=query,
-                auth=(_INDEXER_USER, _INDEXER_PASS),
-                verify=False,
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                body = resp.json()
-                total = body.get("hits", {}).get("total", {})
-                count = total.get("value", 0) if isinstance(total, dict) else total
-                if count and count > 0:
-                    logger.info(
-                        f"AR execution CONFIRMED via indexer  agent={agent_id}  "
-                        f"term={match_term}  command={command_name}"
-                    )
-                    return True, "confirmed via indexer SUCCESS log entry"
-            else:
-                last_error = f"indexer HTTP {resp.status_code}: {resp.text[:150]}"
-        except Exception as exc:
-            last_error = f"indexer query exception: {exc}"
-        time.sleep(interval)
-
-    logger.warning(
-        f"AR execution NOT confirmed within {timeout}s  agent={agent_id}  "
-        f"term={match_term}  last_error={last_error}"
-    )
-    return False, f"no SUCCESS entry found within {timeout}s ({last_error})"
 class WazuhAPIClient:
     def __init__(self, base_url, username, password, verify_ssl=False):
         self.base_url    = base_url.rstrip("/")
@@ -299,7 +232,7 @@ class WazuhAPIClient:
         except Exception as exc:
             logger.error(f"Wazuh auth error: {exc}")
             return None
-    def run_active_response(self, agent_id, command, arguments=None, srcip=None) -> bool:
+    def run_active_response(self, agent_id, command, arguments=None) -> bool:
         token = self._get_token()
         if not token:
             return False
@@ -307,8 +240,6 @@ class WazuhAPIClient:
         body: dict = {"command": command}
         if arguments:
             body["arguments"] = [str(a) for a in arguments if a]
-        if srcip:
-            body["alert"] = {"data": {"srcip": str(srcip)}}
         try:
             resp = _requests.put(
                 f"{self.base_url}/active-response",
@@ -319,7 +250,7 @@ class WazuhAPIClient:
                 timeout=30,
             )
             if resp.status_code in (200, 201, 204):
-                logger.info(f"Wazuh AR dispatched  agent={agent_id}  command={command}  srcip={srcip}")
+                logger.info(f"Wazuh AR dispatched  agent={agent_id}  command={command}")
                 return True
             logger.error(f"Wazuh AR failed  HTTP {resp.status_code}: {resp.text[:200]}")
             return False
@@ -334,17 +265,8 @@ def _get_wazuh_client() -> Optional[WazuhAPIClient]:
     if _wazuh_client is None:
         _wazuh_client = WazuhAPIClient(_WAZUH_MANAGER, _WAZUH_USER, _WAZUH_PASS)
     return _wazuh_client
-def _trigger_via_wazuh_direct(
-    client,
-    case_id,
-    responder_name,
-    poll_result:  bool  = False,
-    poll_timeout: float = 60.0,
-) -> dict:
-    summary: dict = {
-        "status": "failed", "action_id": None, "ip_used": None, "error": None,
-        "confirmed": False, "confirmation_detail": None,
-    }
+def _trigger_via_wazuh_direct(client, case_id, responder_name) -> dict:
+    summary: dict = {"status": "failed", "action_id": None, "ip_used": None, "error": None}
     if not _WAZUH_PASS:
         summary["error"] = "WAZUH_API_PASS not set"
         return summary
@@ -360,6 +282,7 @@ def _trigger_via_wazuh_direct(
     description   = case_data.get("description", "")
     tags          = case_data.get("tags", [])
     custom_fields = case_data.get("customFields") or {}
+
     agent_id = (
         _extract_from_tags(tags, "agent")
         or _extract_from_description_metadata(description, "agent_id")
@@ -370,6 +293,7 @@ def _trigger_via_wazuh_direct(
         summary["error"]  = f"agent_id not found  case={case_id}"
         return summary
     agent_id = str(agent_id).strip()
+
     srcip = (
         _extract_from_tags(tags, "srcip")
         or _extract_from_description_metadata(description, "srcip")
@@ -378,6 +302,7 @@ def _trigger_via_wazuh_direct(
     )
     if not _is_usable_ip(srcip):
         srcip = ""
+
     agent_ip = (
         _extract_from_tags(tags, "agentip")
         or _extract_from_description_metadata(description, "agent_ip")
@@ -390,72 +315,40 @@ def _trigger_via_wazuh_direct(
     command = ""
     arguments: list = []
     ip_used = ""
-    match_term = ""       
-    command_name = ""     
     if responder_name in (RESPONDER_FIM, f"{RESPONDER_FIM}_1_0"):
-        command       = "fim-respond.sh"
-        command_name  = "fim-respond"
-        file_path     = _scrape_filepath_from_description(description)
-        arguments     = [file_path] if file_path else []
-        match_term    = file_path
+        command   = "fim-respond.sh"
+        file_path = _scrape_filepath_from_description(description)
+        arguments = [file_path] if file_path else []
     elif responder_name in (RESPONDER_NETWORK, f"{RESPONDER_NETWORK}_1_0"):
-        command      = "!custom-block-ip"
-        command_name = "custom-block-ip"
+        command = "firewall-drop"
         if _is_usable_ip(srcip):
             ip_used = srcip
             arguments = [srcip]
         elif _is_usable_ip(agent_ip):
             ip_used = agent_ip
             arguments = [agent_ip]
+            logger.warning(f"Wazuh direct: agent_ip fallback  case={case_id}  agent_ip={agent_ip}")
         else:
             summary["status"] = "skipped"
             summary["error"]  = f"No srcip or agent_ip  case={case_id}"
             return summary
-        match_term = ip_used
     else:
         summary["error"] = f"Unknown responder: {responder_name!r}"
         return summary
-
     wazuh = _get_wazuh_client()
     if wazuh is None:
         summary["error"] = "WAZUH_API_PASS not set"
         return summary
-    dispatched = wazuh.run_active_response(
-        agent_id,
-        command,
-        arguments=arguments,
-        srcip=(ip_used if command == "firewall-drop" else None),
-    )
-    if not dispatched:
-        summary["error"] = f"Wazuh AR dispatch returned False  case={case_id}"
-        logger.error(summary["error"])
-        return summary
-
-    summary["ip_used"] = ip_used
-    if poll_result and match_term:
-        confirmed, detail = _poll_ar_execution_confirmed(
-            agent_id, match_term, command_name, timeout=poll_timeout
-        )
-        summary["confirmed"]            = confirmed
-        summary["confirmation_detail"]  = detail
-        if confirmed:
-            summary["status"]    = "triggered"
-            summary["action_id"] = f"WAZUH-AR-{int(time.time())}"
-            logger.info(
-                f"Wazuh direct CONFIRMED  case={case_id}  agent={agent_id}  "
-                f"command={command}  args={arguments}"
-            )
-        else:
-            summary["status"] = "dispatched_unconfirmed"
-            summary["error"]  = detail
-    else:
+    success = wazuh.run_active_response(agent_id, command, arguments)
+    if success:
         summary["status"]    = "triggered"
         summary["action_id"] = f"WAZUH-AR-{int(time.time())}"
-        summary["confirmed"] = None  # explicitly "unknown", not "confirmed True"
-        logger.info(
-            f"Wazuh direct DISPATCHED (unconfirmed — poll_result=False)  "
-            f"case={case_id}  agent={agent_id}  command={command}  args={arguments}"
-        )
+        summary["ip_used"]   = ip_used
+        logger.info(f"Wazuh direct triggered  case={case_id}  agent={agent_id}  command={command}  args={arguments}")
+    else:
+        summary["error"] = f"Wazuh AR returned False  case={case_id}"
+        logger.error(summary["error"])
+
     return summary
 def run_responder(
     client,
@@ -470,42 +363,27 @@ def run_responder(
         "action_id":  None,
         "status":     "failed",
         "ip_used":    None,
-        "confirmed":  None,
         "error":      None,
     }
-    logger.info(
-        f"run_responder  case={case_id}  responder={responder_name}  "
-        f"poll_result={poll_result}  poll_timeout={poll_timeout}"
+
+    logger.info(f"run_responder  case={case_id}  responder={responder_name}")
+    result = _trigger_responder_via_thehive(client, case_id, responder_name)
+
+    if result["status"] == "triggered":
+        summary["status"]    = "triggered"
+        summary["action_id"] = result["action_id"]
+        return summary
+    logger.warning(
+        f"TheHive-routed trigger failed  case={case_id}  "
+        f"error={result.get('error', '')}  — falling back to Wazuh API"
     )
     if not _WAZUH_PASS:
-        logger.warning(
-            f"WAZUH_API_PASS not set — falling back to TheHive/Cortex route "
-            f"(unverified) for case={case_id}"
-        )
-        result = _trigger_responder_via_thehive(client, case_id, responder_name)
-        summary["status"]    = result["status"]
-        summary["action_id"] = result["action_id"]
-        summary["error"]     = result.get("error")
+        summary["error"] = f"TheHive-routed trigger failed and WAZUH_API_PASS not set. Error: {result.get('error', '')}"
+        logger.error(summary["error"])
         return summary
-    fallback = _trigger_via_wazuh_direct(
-        client, case_id, responder_name,
-        poll_result=poll_result, poll_timeout=poll_timeout,
-    )
+    fallback = _trigger_via_wazuh_direct(client, case_id, responder_name)
     summary["status"]    = fallback["status"]
     summary["action_id"] = fallback.get("action_id")
     summary["ip_used"]   = fallback.get("ip_used")
-    summary["confirmed"] = fallback.get("confirmed")
     summary["error"]     = fallback.get("error")
-    if summary["status"] not in ("triggered",):
-        logger.warning(
-            f"Wazuh-direct trigger did not confirm  case={case_id}  "
-            f"status={summary['status']}  error={summary['error']}  "
-            f"— trying TheHive/Cortex route as last resort"
-        )
-        result = _trigger_responder_via_thehive(client, case_id, responder_name)
-        if result["status"] == "triggered":
-            summary["status"]    = "triggered"
-            summary["action_id"] = result["action_id"]
-            summary["confirmed"] = None  # Cortex route has no equivalent confirmation
-            summary["error"]     = None
     return summary
