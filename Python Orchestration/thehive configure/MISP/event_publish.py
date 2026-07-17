@@ -7,21 +7,23 @@ import urllib.request
 import urllib.error
 import ssl
 from datetime import datetime, timezone
+
 MISP_URL         = "https://172.24.80.95:9001"
-API_KEY          = "Your-MISP-API-Key"
+API_KEY          = "your-misp-api"
 VERIFY_SSL       = False
-DISTRIBUTION_ALL = 3 
+DISTRIBUTION_ALL = 3  
+
 TLP_DISTRIBUTION = {
     "tlp:white": 3,
     "tlp:clear": 3,
-    "tlp:green": 3, # default 2
-    "tlp:amber": 3, # default 1
+    "tlp:green": 2, # default 2
+    "tlp:amber": 1, # default 1
     "tlp:amber+strict": 0,
     "tlp:red":   0,
 }
-DEFAULT_DISTRIBUTION = 3  # used if a rule has no tlp:* tag — safest non-public default
+DEFAULT_DISTRIBUTION = 3 
+
 ENRICHMENT = {
-    # ── Rule 100101: Reverse Shell Tool
     "100101": {
         "attributes": [
             {
@@ -84,7 +86,6 @@ ENRICHMENT = {
             'workflow:state="incomplete"',
         ],
     },
-    # ── Rule 110012: Tetragon shell execution
     "110012": {
         "attributes": [
             {
@@ -145,7 +146,6 @@ ENRICHMENT = {
             'circl:incident-classification="intrusion-attempt"',
         ],
     },
-    # ── Rule 100117: Critical file modified
     "100117": {
         "attributes": [
             {
@@ -200,7 +200,6 @@ ENRICHMENT = {
             'circl:incident-classification="system-compromise"',
         ],
     },
-    # ── Rule 100123: Repeated critical file mods
     "100123": {
         "attributes": [
             {
@@ -254,7 +253,6 @@ ENRICHMENT = {
             'circl:incident-classification="system-compromise"',
         ],
     },
-    # ── Rule 5710: SSH attempt non-existent user
     "5710": {
         "attributes": [
             {
@@ -310,7 +308,6 @@ ENRICHMENT = {
             'circl:incident-classification="scanning"',
         ],
     },
-    # ── Rule 5712: SSH brute force
     "5712": {
         "attributes": [
             {
@@ -365,18 +362,21 @@ ENRICHMENT = {
         ],
     },
 }
+
 def get_distribution_for_rule(rule_id: str) -> int:
     spec = ENRICHMENT.get(rule_id, {})
     for tag in spec.get("taxonomy_tags", []):
         if tag.startswith("tlp:"):
             return TLP_DISTRIBUTION.get(tag, DEFAULT_DISTRIBUTION)
     return DEFAULT_DISTRIBUTION
+
 def _ctx() -> ssl.SSLContext:
     ctx = ssl.create_default_context()
     if not VERIFY_SSL:
         ctx.check_hostname = False
         ctx.verify_mode    = ssl.CERT_NONE
     return ctx
+
 def misp_request(method: str, endpoint: str, payload: dict = None) -> dict:
     data = json.dumps(payload).encode() if payload is not None else b""
     req  = urllib.request.Request(
@@ -393,32 +393,34 @@ def misp_request(method: str, endpoint: str, payload: dict = None) -> dict:
             return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
-        print(f"  [ERROR] HTTP {e.code} on {method} {endpoint}: {body[:300]}")
         return {"_error": body, "_code": e.code}
     except urllib.error.URLError as e:
         print(f"  [ERROR] Cannot reach MISP: {e.reason}", file=sys.stderr)
-        sys.exit(1)
+    return {"_error": str(e.reason), "_code": 0}
+
 def misp_post(endpoint: str, payload: dict = None) -> dict:
     return misp_request("POST", endpoint, payload if payload is not None else {})
+
 def misp_get(endpoint: str) -> dict:
     return misp_request("GET", endpoint)
+
 def is_published(e: dict) -> bool:
     val = e.get("published", False)
     if isinstance(val, bool):
         return val
     return str(val) in ("1", "true", "True")
+
 def extract_rule_id(event_info: str) -> str:
     m = re.search(r'Rule\s+(\d+)', event_info or "")
     return m.group(1) if m else ""
+
 def enrich_event(event_id: str, rule_id: str) -> None:
     spec = ENRICHMENT.get(rule_id)
     if not spec:
         return
 
     distribution = get_distribution_for_rule(rule_id)
-    print(f"  [~] Enriching event {event_id} for Rule {rule_id}  "
-          f"(distribution={distribution}/{DIST_LABELS.get(distribution, '?')})")
-    # ── 1. Attributes ────────────────────────────────────────────────
+
     attrs_ok = attrs_skip = attrs_fail = 0
     for attr in spec["attributes"]:
         payload = {
@@ -436,14 +438,11 @@ def enrich_event(event_id: str, rule_id: str) -> None:
             err = resp["_error"].lower()
             if "already" in err or "exist" in err or resp.get("_code") == 403:
                 attrs_skip += 1
-                print(f"      [·] Skipped (duplicate): {attr['type']}={short_val}")
             else:
                 attrs_fail += 1
-                print(f"      [✗] Failed: {attr['type']}={short_val} — {resp['_error'][:150]}")
         else:
             attrs_ok += 1
-    print(f"      Attributes : {attrs_ok} added  {attrs_skip} skipped  {attrs_fail} failed")
-    # ── 2. Galaxy tags (MITRE ATT&CK) ───────────────────────────────
+
     tags_ok = tags_skip = tags_fail = 0
     for tag in spec["galaxy_tags"]:
         resp = misp_post(f"/events/addTag/{event_id}", {"tag": tag})
@@ -455,9 +454,7 @@ def enrich_event(event_id: str, rule_id: str) -> None:
                 tags_fail += 1
         else:
             tags_ok += 1
-    print(f"      Galaxy tags: {tags_ok} added  {tags_skip} skipped  {tags_fail} failed")
 
-    # ── 3. Taxonomy tags (TLP / Admiralty Scale / CIRCL / workflow) ─
     taxonomy_tags = spec.get("taxonomy_tags", [])
     if taxonomy_tags:
         tax_ok = tax_skip = tax_fail = 0
@@ -472,7 +469,7 @@ def enrich_event(event_id: str, rule_id: str) -> None:
                     print(f"      [!] Taxonomy tag failed: {tag} — {resp['_error'][:120]}")
             else:
                 tax_ok += 1
-        print(f"      Taxonomy   : {tax_ok} added  {tax_skip} skipped  {tax_fail} failed")
+
 def fetch_events(hours: int, limit: int) -> list:
     print(f"[*] MISP URL  : {MISP_URL}")
     print(f"[*] Time range: last {hours} hour(s)  |  limit: {limit}\n")
@@ -489,6 +486,7 @@ def fetch_events(hours: int, limit: int) -> list:
     if isinstance(raw, dict):
         return raw.get("Event", [])
     return []
+
 def fetch_single_event(event_id: int) -> list:
     print(f"[*] Fetching event ID: {event_id}\n")
     resp = misp_get(f"/events/view/{event_id}")
@@ -497,9 +495,11 @@ def fetch_single_event(event_id: int) -> list:
         print(f"[ERROR] Event {event_id} not found.", file=sys.stderr)
         sys.exit(1)
     return [{"Event": e}]
+
 def get_live_status(event_id: str) -> dict:
     resp = misp_get(f"/events/view/{event_id}")
     return resp.get("Event", {})
+
 def set_distribution(event_id: str, distribution: int = DISTRIBUTION_ALL) -> bool:
     resp = misp_post(f"/events/edit/{event_id}", {
         "Event": {
@@ -511,6 +511,7 @@ def set_distribution(event_id: str, distribution: int = DISTRIBUTION_ALL) -> boo
         return False
     e = resp.get("Event", {})
     return int(e.get("distribution", -1)) == distribution
+
 def publish_event(event_id: str, distribution: int = DISTRIBUTION_ALL) -> bool:
     misp_post(f"/events/publish/{event_id}", {})
     misp_post(f"/events/edit/{event_id}", {
@@ -521,17 +522,20 @@ def publish_event(event_id: str, distribution: int = DISTRIBUTION_ALL) -> bool:
     })
     live = get_live_status(event_id)
     return is_published(live)
+
 THREAT_LEVELS = {1: "High", 2: "Medium", 3: "Low", 4: "Undefined"}
 ANALYSIS      = {0: "Initial", 1: "Ongoing", 2: "Completed"}
 DIST_LABELS   = {
     0: "Org only", 1: "Community", 2: "Connected",
     3: "All communities", 4: "Sharing group",
 }
+
 def fmt_ts(ts) -> str:
     try:
         return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     except Exception:
         return str(ts) or "—"
+
 def print_table(events: list, hours: int) -> None:
     now   = datetime.now(tz=timezone.utc)
     label = f"last {hours} hour(s)" if hours else "single event lookup"
@@ -570,6 +574,7 @@ def print_table(events: list, hours: int) -> None:
         print(f"{'':>{W['id']}}  {MISP_URL}/events/view/{eid}\n")
     print(sep)
     print(f"Total: {len(events)} event(s)\n")
+
 def publish_events(events: list) -> None:
     print("\n" + "=" * 62)
     print(f"  Publishing {len(events)} event(s) — distribution per TLP tag")
@@ -614,10 +619,12 @@ def publish_events(events: list) -> None:
         print()
     print("─" * 62)
     print(f"  Result: {success} published ✓   {failed} failed ✗\n")
+
 def save_json(events: list, path: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(events, f, indent=2, ensure_ascii=False)
     print(f"[+] Saved to: {path}")
+
 def enrich_only(events: list) -> None:
     targets = []
     for ev in events:
@@ -653,6 +660,7 @@ def enrich_only(events: list) -> None:
         print()
     print("─" * 62)
     print(f"  Result: {ok} enriched ✓   {fail} failed ✗\n")
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="List and publish MISP events from TheHive."
@@ -670,6 +678,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output",       default="",
                    help="Save raw JSON to file")
     return p.parse_args()
+
 def main() -> None:
     args = parse_args()
     if args.id:
@@ -691,14 +700,6 @@ def main() -> None:
             print("Aborted.")
     if args.output:
         save_json(events, args.output)
+
 if __name__ == "__main__":
     main()
-"""
-    python publish_event.py                          # list events (last 4h)
-    python publish_event.py --hours 48               # list events (last 48h)
-    python publish_event.py --publish                # enrich (attrs+galaxy+taxonomy) + publish all found events
-    python publish_event.py --publish --id 5222      # enrich + publish single event
-    python publish_event.py --enrich-only            # patch already-published events with attrs+galaxy+taxonomy
-    python publish_event.py --enrich-only --id 5254  # patch a single already-published event
-    python publish_event.py --output out.json        # save raw JSON to file
-"""
