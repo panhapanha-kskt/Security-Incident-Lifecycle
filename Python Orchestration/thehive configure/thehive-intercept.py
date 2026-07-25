@@ -7,10 +7,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import os 
+
+def _load_env_file(path: str = "/path/to/secrets.env") -> None:
+    p = Path(path)
+    if not p.exists():
+        return
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        os.environ.setdefault(key, val)
+
+_load_env_file()
+
 import argparse
 import json
 import logging
-import os
 import signal
 import time
 from collections import deque
