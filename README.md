@@ -244,18 +244,6 @@ Configure the TheHive ↔ Cortex and TheHive ↔ MISP connectors in
 responders you need (VirusTotal, MISP, Shodan, and the custom Wazuh
 responders) from the Cortex UI.
 
-### 2. Configure environment variables
-
-Never hardcode credentials — export them before starting the interceptor:
-
-```bash
-export THEHIVE_KEY="<thehive-api-key>"
-export WAZUH_API_PASS="<wazuh-api-password>"
-export GMAIL_USER="<sender-gmail-address>"
-export GMAIL_PASS="<gmail-app-password>"
-export ALERT_TO="<recipient-address>"
-export CORTEX_KEY="<cortex-api-key>"
-export MISP_API_KEY="<misp-api-key>"
 ```
 
 ### 3. Wire up the Wazuh integration
