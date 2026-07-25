@@ -244,9 +244,7 @@ Configure the TheHive ↔ Cortex and TheHive ↔ MISP connectors in
 responders you need (VirusTotal, MISP, Shodan, and the custom Wazuh
 responders) from the Cortex UI.
 
-```
-
-### 3. Wire up the Wazuh integration
+### 2. Wire up the Wazuh integration
 
 The `custom-asil` integration script (in `/var/ossec/integrations/`) pushes
 alerts to the interceptor over a Unix socket. Confirm it's referenced in
@@ -256,7 +254,7 @@ alerts to the interceptor over a Unix socket. Confirm it's referenced in
 systemctl restart wazuh-manager
 ```
 
-### 4. Run the interceptor
+### 3. Run the interceptor
 
 ```bash
 cd thehive-configure
@@ -265,7 +263,7 @@ python3 thehive-intercept.py --verbose  # full per-alert detail
 python3 thehive-intercept.py --dry-run  # no external API calls, terminal only
 ```
 
-### 5. Watch it work
+### 4. Watch it work
 
 - Trigger a test event (e.g. a few failed SSH logins, or modify
   `/etc/sudoers` on the monitored agent).
@@ -273,7 +271,7 @@ python3 thehive-intercept.py --dry-run  # no external API calls, terminal only
 - Check TheHive for the case, Cortex for the analyzer/responder jobs, MISP
   for the synced event, and your inbox for the email alert.
 
-### 6. (Optional) Run the MISP backfill
+### 5. (Optional) Run the MISP backfill
 
 ```bash
 cd thehive-configure/MISP
