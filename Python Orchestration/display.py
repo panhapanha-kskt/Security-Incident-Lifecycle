@@ -2,7 +2,8 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import re
 import sys
-_USE_COLOR = sys.stdout.isatty()
+import os
+_USE_COLOR = sys.stdout.isatty() or os.environ.get("FORCE_COLOR") == "1"
 
 def _c(code: str) -> str:
     return code if _USE_COLOR else ""
