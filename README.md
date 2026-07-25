@@ -19,7 +19,8 @@ correlation across events, no case management, no automated containment, no
 threat-intel enrichment. This project closes that gap by building a custom
 pipeline that sits between Wazuh and the rest of the SOC toolchain:
 
-<img width="1920" height="1080" alt="Architecture" src="https://github.com/user-attachments/assets/7bc9c5b4-96a8-4419-be6b-deea9d128b3a" />
+<img width="752" height="1016" alt="Implementation drawio(1)" src="https://github.com/user-attachments/assets/9af9545f-a5fe-43b7-bc53-6ce499a78b1f" />
+
 
 ---
 
